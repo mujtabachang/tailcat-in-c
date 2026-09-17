@@ -51,11 +51,19 @@ std::shared_ptr<HostReadState> start_host_reader(
   return state;
 }
 
+std::vector<ServedTcpMapping> same_port_mappings(
+    const std::vector<std::uint16_t>& ports) {
+  std::vector<ServedTcpMapping> out;
+  out.reserve(ports.size());
+  for (const auto port : ports) out.push_back(ServedTcpMapping{port, port});
+  return out;
+}
+
 }  // namespace
 
 struct ServedTcpPorts::Impl {
   struct Listener {
-    std::uint16_t port = 0;
+    ServedTcpMapping mapping;
     std::shared_ptr<LwipTcpListener> listener;
   };
 
@@ -72,23 +80,33 @@ struct ServedTcpPorts::Impl {
 
   TailcatServerDataPlane& data;
   std::string host_name;
+  std::vector<ServedTcpMapping> served_mappings;
   std::vector<std::uint16_t> exposed_ports;
   std::vector<Listener> listeners;
   std::vector<Connection> connections;
 
-  Impl(TailcatServerDataPlane& data_plane, std::vector<std::uint16_t> ports,
-       std::string host)
-      : data(data_plane), host_name(std::move(host)), exposed_ports(std::move(ports)) {
-    if (exposed_ports.empty()) {
+  Impl(TailcatServerDataPlane& data_plane,
+       std::vector<ServedTcpMapping> mappings, std::string host)
+      : data(data_plane), host_name(std::move(host)),
+        served_mappings(std::move(mappings)) {
+    if (served_mappings.empty()) {
       throw std::invalid_argument("serve requires at least one TCP port");
     }
-    std::sort(exposed_ports.begin(), exposed_ports.end());
-    if (std::adjacent_find(exposed_ports.begin(), exposed_ports.end()) != exposed_ports.end()) {
-      throw std::invalid_argument("duplicate served TCP port");
-    }
-    for (const auto port : exposed_ports) {
-      if (port == 0U) throw std::invalid_argument("cannot serve TCP port zero");
-      listeners.push_back(Listener{port, data.listen(port)});
+    std::sort(served_mappings.begin(), served_mappings.end(),
+              [](const ServedTcpMapping& a, const ServedTcpMapping& b) {
+                return a.tailcat_port < b.tailcat_port;
+              });
+    for (std::size_t i = 0; i < served_mappings.size(); ++i) {
+      const auto& mapping = served_mappings[i];
+      if (mapping.tailcat_port == 0U || mapping.host_port == 0U) {
+        throw std::invalid_argument("cannot serve TCP port zero");
+      }
+      if (i != 0U &&
+          served_mappings[i - 1U].tailcat_port == mapping.tailcat_port) {
+        throw std::invalid_argument("duplicate served Tailcat TCP port");
+      }
+      exposed_ports.push_back(mapping.tailcat_port);
+      listeners.push_back(Listener{mapping, data.listen(mapping.tailcat_port)});
     }
   }
 
@@ -98,14 +116,12 @@ struct ServedTcpPorts::Impl {
         auto tunnel = listening.listener->accept();
         if (!tunnel) break;
         try {
-          auto host = HostTcpStream::connect(host_name, listening.port);
+          auto host = HostTcpStream::connect(host_name, listening.mapping.host_port);
           auto reader = start_host_reader(host);
           connections.push_back(Connection{std::move(tunnel), std::move(host),
                                            std::move(reader)});
         } catch (...) {
           tunnel->close();
-          // A local target being temporarily unavailable must not take down the
-          // Tailcat server or other served ports.
         }
       }
     }
@@ -207,7 +223,13 @@ struct ServedTcpPorts::Impl {
 ServedTcpPorts::ServedTcpPorts(TailcatServerDataPlane& data_plane,
                                std::vector<std::uint16_t> ports,
                                std::string host)
-    : impl_(std::make_unique<Impl>(data_plane, std::move(ports),
+    : impl_(std::make_unique<Impl>(data_plane, same_port_mappings(ports),
+                                   std::move(host))) {}
+
+ServedTcpPorts::ServedTcpPorts(TailcatServerDataPlane& data_plane,
+                               std::vector<ServedTcpMapping> mappings,
+                               std::string host)
+    : impl_(std::make_unique<Impl>(data_plane, std::move(mappings),
                                    std::move(host))) {}
 
 ServedTcpPorts::~ServedTcpPorts() = default;
@@ -218,6 +240,9 @@ std::size_t ServedTcpPorts::connection_count() const noexcept {
 }
 const std::vector<std::uint16_t>& ServedTcpPorts::ports() const noexcept {
   return impl_->exposed_ports;
+}
+const std::vector<ServedTcpMapping>& ServedTcpPorts::mappings() const noexcept {
+  return impl_->served_mappings;
 }
 
 }  // namespace tailcat
