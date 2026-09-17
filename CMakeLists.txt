@@ -207,5 +207,26 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_host_tcp_tests tests/host_tcp_test.cpp)
     target_link_libraries(tailcat_host_tcp_tests PRIVATE tailcat_core Threads::Threads)
     add_test(NAME tailcat_host_tcp COMMAND tailcat_host_tcp_tests)
+
+    set(TAILCAT_TEST_TARGETS
+      tailcat_tests
+      tailcat_protocol_tests
+      tailcat_ip_tests
+      tailcat_lwip_tests
+      tailcat_lwip_tcp_tests
+      tailcat_derp_tests
+      tailcat_rendezvous_tests
+      tailcat_wireguard_tests
+      tailcat_wireguard_derp_tests
+      tailcat_data_plane_tests
+      tailcat_host_tcp_tests
+    )
+    foreach(test_target IN LISTS TAILCAT_TEST_TARGETS)
+      if(MSVC)
+        target_compile_options(${test_target} PRIVATE /UNDEBUG)
+      else()
+        target_compile_options(${test_target} PRIVATE -UNDEBUG)
+      endif()
+    endforeach()
   endif()
 endif()
