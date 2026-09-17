@@ -124,6 +124,7 @@ endif()
 
 add_library(tailcat_core STATIC
     src/cli.cpp
+    src/forward_command.cpp
     src/platform.cpp
     src/protocol.cpp
     src/ip.cpp
