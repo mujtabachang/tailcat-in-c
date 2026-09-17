@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
