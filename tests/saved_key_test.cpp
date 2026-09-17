@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 int main() {
@@ -28,6 +29,14 @@ int main() {
   const auto pub = tailcat::node_public_text(loaded.identity.public_key);
   assert(pub.rfind("nodekey:", 0) == 0);
   assert(pub.size() == std::string("nodekey:").size() + 64U);
+  assert(tailcat::parse_node_public_text(pub) == loaded.identity.public_key);
+  bool rejected_wrong_type = false;
+  try {
+    (void)tailcat::parse_node_public_text("privkey:0000000000000000000000000000000000000000000000000000000000000000");
+  } catch (const std::invalid_argument&) {
+    rejected_wrong_type = true;
+  }
+  assert(rejected_wrong_type);
 
   std::string json;
   {
