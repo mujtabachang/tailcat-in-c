@@ -7,6 +7,7 @@
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
 #include "tailcat/platform.hpp"
+#include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/rendezvous.hpp"
 
@@ -16,10 +17,10 @@
 #include <deque>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -191,7 +192,6 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
 
     if (stream->eof()) {
       stream->close();
-      // Give the userspace stack a short chance to emit the final ACK.
       const auto drain_deadline = std::chrono::steady_clock::now() + 250ms;
       while (std::chrono::steady_clock::now() < drain_deadline) {
         (void)data.pump_for(10ms);
@@ -220,31 +220,50 @@ int run_ping(const std::vector<std::string>& args, bool verbose) {
   return 0;
 }
 
-int run_default_server(bool verbose) {
-  const auto identity = generate_node_key();
-  const auto disco = derive_disco_key(identity.private_key);
-  const auto psk = generate_secret_key();
-  const auto map = fetch_derp_map(std::string(kDefaultDerpMap));
-  const auto region = select_derp_region(map);
-  const auto node = primary_derp_node(region);
-
+struct ServerBootstrap {
+  NodeKeyPair identity;
+  DiscoKeyPair disco;
+  std::optional<Key32> psk;
+  DerpRegion region;
+  DerpNode node;
   ConnInfo info;
-  info.server_public = identity.public_key;
-  info.server_disco_public = disco.public_key;
-  info.preshared_key = psk;
-  info.region_id = region.region_id;
-  const auto address = encode_tailcat_addr(info);
+  std::string address;
+};
 
-  DerpHttpClient derp(node, identity, "tailcat");
-  derp.connect();
-  TailcatServerDataPlane data(derp, identity, std::optional<Key32>{psk});
-  auto listener = data.listen(1U);
+ServerBootstrap make_server_bootstrap(bool use_psk) {
+  ServerBootstrap out;
+  out.identity = generate_node_key();
+  out.disco = derive_disco_key(out.identity.private_key);
+  if (use_psk) out.psk = generate_secret_key();
+  const auto map = fetch_derp_map(std::string(kDefaultDerpMap));
+  out.region = select_derp_region(map);
+  out.node = primary_derp_node(out.region);
+  out.info.server_public = out.identity.public_key;
+  out.info.server_disco_public = out.disco.public_key;
+  out.info.preshared_key = out.psk;
+  out.info.region_id = out.region.region_id;
+  out.address = encode_tailcat_addr(out.info);
+  return out;
+}
 
-  std::cerr << "# Selected bootstrap relay region " << region.region_id;
-  if (!region.region_name.empty()) std::cerr << ", " << region.region_name;
+void log_server_address(const ServerBootstrap& server, bool verbose) {
+  std::cerr << "# Selected bootstrap relay region " << server.region.region_id;
+  if (!server.region.region_name.empty()) std::cerr << ", " << server.region.region_name;
   std::cerr << '\n';
-  std::cerr << "# 🐈 Server listening with new address: " << address << '\n';
-  if (verbose) std::cerr << "# DERP relay " << node.host_name << '\n';
+  std::cerr << "# 🐈 Server listening with new address: " << server.address << '\n';
+  if (verbose) std::cerr << "# DERP relay " << server.node.host_name << '\n';
+  if (!server.psk) {
+    std::cerr << "# ⚠️ WARNING: serving without a WireGuard PSK\n";
+  }
+}
+
+int run_default_server(bool verbose) {
+  auto server = make_server_bootstrap(true);
+  DerpHttpClient derp(server.node, server.identity, "tailcat");
+  derp.connect();
+  TailcatServerDataPlane data(derp, server.identity, server.psk);
+  auto listener = data.listen(1U);
+  log_server_address(server, verbose);
 
   std::shared_ptr<LwipTcpStream> stream;
   for (;;) {
@@ -264,6 +283,40 @@ int run_default_server(bool verbose) {
       listener->close();
       return 0;
     }
+  }
+}
+
+int run_serve(const std::vector<std::string>& args, bool verbose) {
+  bool use_psk = true;
+  std::vector<std::uint16_t> ports;
+  for (const auto& arg : args) {
+    if (arg == "--psk=false") {
+      use_psk = false;
+    } else if (arg == "--psk=true") {
+      use_psk = true;
+    } else if (!arg.empty() && arg[0] == '-') {
+      throw std::invalid_argument("unsupported serve option: " + arg);
+    } else {
+      ports.push_back(parse_port(arg));
+    }
+  }
+  if (ports.empty()) throw std::invalid_argument("serve requires one or more TCP ports");
+
+  auto server = make_server_bootstrap(use_psk);
+  DerpHttpClient derp(server.node, server.identity, "tailcat");
+  derp.connect();
+  TailcatServerDataPlane data(derp, server.identity, server.psk);
+  ServedTcpPorts forwarding(data, std::move(ports));
+  log_server_address(server, verbose);
+  if (verbose) {
+    for (const auto port : forwarding.ports()) {
+      std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port << '\n';
+    }
+  }
+
+  for (;;) {
+    (void)data.pump_for(10ms);
+    forwarding.poll();
   }
 }
 
@@ -300,7 +353,8 @@ std::string usage() {
       << "Usage:\n"
       << "  tailcat [options]                 Listen for a pipe connection\n"
       << "  tailcat <tc-address> [port]       Connect to a peer\n"
-      << "  tailcat serve ...                 Serve ports/files/SSH/exec\n"
+      << "  tailcat serve [--psk=false] PORT...\n"
+      << "                                     Proxy selected TCP ports to localhost\n"
       << "  tailcat forward ...               Forward local ports\n"
       << "  tailcat browse ...                Open a forwarded HTTP service\n"
       << "  tailcat cp ...                    Copy files\n"
@@ -331,10 +385,11 @@ int run(const CommandLine& cli) {
   if (cli.command.empty()) return run_default_server(cli.verbose);
   if (cli.command == "parse") return run_parse(cli.args);
   if (cli.command == "ping") return run_ping(cli.args, cli.verbose);
+  if (cli.command == "serve") return run_serve(cli.args, cli.verbose);
   if (cli.command.rfind("tc", 0) == 0) return run_client(cli.command, cli.args, cli.verbose);
 
   static const std::unordered_set<std::string> commands = {
-      "serve", "forward", "browse", "cp", "recv", "ssh", "socks", "genkey", "ls"};
+      "forward", "browse", "cp", "recv", "ssh", "socks", "genkey", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n" << usage();
