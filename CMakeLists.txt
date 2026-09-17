@@ -10,6 +10,7 @@ project(tailcat VERSION ${TAILCAT_PROJECT_VERSION} LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies as static libraries" FORCE)
 
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
@@ -67,7 +68,7 @@ if(NOT CURL_FOUND)
   FetchContent_MakeAvailable(tailcat_curl)
 endif()
 
-add_library(tailcat_core
+add_library(tailcat_core STATIC
     src/cli.cpp
     src/platform.cpp
     src/protocol.cpp
