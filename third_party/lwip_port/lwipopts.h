@@ -16,10 +16,13 @@
 #define LWIP_ICMP6 1
 
 /* Tailcat's virtual interface carries raw IP packets, never Ethernet frames.
- * Keeping LWIP_ETHERNET disabled also prevents netif.c from depending on the
- * unused ethernet_input implementation.
+ * Disable every Ethernet/ARP-dependent feature so the raw-IP netif does not
+ * pull in an unused L2 implementation.
  */
 #define LWIP_ETHERNET 0
+#define LWIP_ARP 0
+#define PPPOE_SUPPORT 0
+#define LWIP_IGMP 0
 #define LWIP_SINGLE_NETIF 1
 #define LWIP_IPV6_SCOPES 0
 
