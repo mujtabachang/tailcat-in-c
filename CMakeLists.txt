@@ -15,6 +15,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build dependencies as static libraries" FO
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 # DERP authentication uses the same X25519 + XSalsa20-Poly1305 NaCl box
 # construction as tailscale/types/key. Build libsodium natively on every OS.
@@ -125,6 +126,7 @@ add_library(tailcat_core STATIC
     src/derp_map.cpp
     src/rendezvous.cpp
     src/wireguard_engine.cpp
+    src/wireguard_derp.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
@@ -173,5 +175,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_wireguard_tests tests/wireguard_test.cpp)
     target_link_libraries(tailcat_wireguard_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_wireguard COMMAND tailcat_wireguard_tests)
+
+    add_executable(tailcat_wireguard_derp_tests tests/wireguard_derp_test.cpp)
+    target_link_libraries(tailcat_wireguard_derp_tests PRIVATE tailcat_core Threads::Threads)
+    add_test(NAME tailcat_wireguard_derp COMMAND tailcat_wireguard_derp_tests)
   endif()
 endif()
