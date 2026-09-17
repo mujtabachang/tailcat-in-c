@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include "tailcat/cli.hpp"
+#include "tailcat/address_resolver.hpp"
 #include "tailcat/crypto.hpp"
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
@@ -142,8 +143,9 @@ std::shared_ptr<InputState> start_stdin_reader() {
   return state;
 }
 
-int run_client(std::string_view address, const std::vector<std::string>& args,
-               bool verbose, const std::string& key_name) {
+int run_client(std::string_view address_argument,
+               const std::vector<std::string>& args, bool verbose,
+               const std::string& key_name) {
   if (args.size() > 1U) {
     throw std::invalid_argument(
         "connect accepts at most one TCP port argument");
@@ -151,12 +153,16 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
   prepare_binary_stdio();
   const auto port =
       args.empty() ? static_cast<std::uint16_t>(1U) : parse_port(args[0]);
-  auto info = parse_tailcat_addr(address);
+  const auto resolved = resolve_tailcat_address_argument(address_argument);
+  auto info = parse_tailcat_addr(resolved.address);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
   const auto identity = runtime_identity(key_name);
 
   if (verbose) {
+    if (resolved.via_dns) {
+      std::cerr << "# resolved " << resolved.dns_name << " via tailcat= TXT\n";
+    }
     std::cerr << "# connecting through DERP region " << region.region_id
               << " (" << region.region_code << ")\n";
   }
@@ -226,9 +232,10 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
 int run_ping(const std::vector<std::string>& args, bool verbose,
              const std::string& key_name) {
   if (args.size() != 1U) {
-    throw std::invalid_argument("ping requires one <tc-address>");
+    throw std::invalid_argument("ping requires one <tc-address-or-dns-name>");
   }
-  const auto info = parse_tailcat_addr(args[0]);
+  const auto resolved = resolve_tailcat_address_argument(args[0]);
+  const auto info = parse_tailcat_addr(resolved.address);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
   const auto identity = runtime_identity(key_name);
@@ -244,7 +251,12 @@ int run_ping(const std::vector<std::string>& args, bool verbose,
     std::cout << region.region_id;
   }
   std::cout << ")\n";
-  if (verbose) std::cerr << "# DERP relay " << node.host_name << '\n';
+  if (verbose) {
+    if (resolved.via_dns) {
+      std::cerr << "# resolved " << resolved.dns_name << " via tailcat= TXT\n";
+    }
+    std::cerr << "# DERP relay " << node.host_name << '\n';
+  }
   return 0;
 }
 
@@ -478,15 +490,15 @@ std::string usage() {
   out << "tailcat " << kVersion << " (native C++20)\n\n"
       << "Usage:\n"
       << "  tailcat [options]                         Listen for a pipe connection\n"
-      << "  tailcat <tc-address> [port]               Connect to a peer\n"
+      << "  tailcat <tc-address|dns-name> [port]      Connect to a peer\n"
       << "  tailcat serve [--psk=false] [--allow=NODEKEY,...] (ssh|PORT)...\n"
       << "                                             Proxy selected services to localhost\n"
       << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
       << "                                             Run system OpenSSH through Tailcat\n"
       << "  tailcat cp [scp options] SOURCE DEST      Copy with system scp through Tailcat\n"
-      << "  tailcat forward [--bind=ADDR] TCADDR [LOCAL:]REMOTE...\n"
+      << "  tailcat forward [--bind=ADDR] DEST [LOCAL:]REMOTE...\n"
       << "                                             Forward local TCP through Tailcat\n"
-      << "  tailcat browse TCADDR [PORT]              Open a forwarded HTTP service\n"
+      << "  tailcat browse DEST [PORT]                Open a forwarded HTTP service\n"
       << "  tailcat resolve <tc-address>              Embed the current DERP region\n"
       << "  tailcat genkey --key=NAME|PATH [options] Generate persistent identity\n"
       << "  tailcat genkey --client --key=NAME|PATH   Generate client identity\n"
@@ -495,7 +507,7 @@ std::string usage() {
       << "  tailcat printpub                          Print selected client public key\n"
       << "  tailcat recv ...                          Receive files\n"
       << "  tailcat socks ...                         Run a SOCKS proxy\n"
-      << "  tailcat ping <tc-address>                 Probe a peer over DERP\n"
+      << "  tailcat ping <tc-address|dns-name>        Probe a peer over DERP\n"
       << "  tailcat parse <tc-address>                Decode a tailcat address\n\n"
       << "Options:\n"
       << "  -h, --help       Show this help\n"
@@ -528,7 +540,7 @@ int run(const CommandLine& cli) {
   if (cli.command == "ssh") {
     return run_ssh_command(cli.args, cli.verbose, cli.key_path);
   }
-  if (cli.command.rfind("tc", 0) == 0) {
+  if (cli.command.rfind("tc", 0) == 0 || cli.command.find('.') != std::string::npos) {
     return run_client(cli.command, cli.args, cli.verbose, cli.key_path);
   }
   if (const auto extra =
@@ -536,7 +548,7 @@ int run(const CommandLine& cli) {
     return *extra;
   }
 
-  static const std::unordered_set<std::string> commands = {"recv", "socks", "ls"};
+  static const std::unordered_set<std::string> commands = {"recv", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n"
