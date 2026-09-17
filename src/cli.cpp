@@ -6,6 +6,7 @@
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
+#include "tailcat/extra_commands.hpp"
 #include "tailcat/forward_command.hpp"
 #include "tailcat/platform.hpp"
 #include "tailcat/port_forward.hpp"
@@ -360,10 +361,6 @@ CommandLine parse_command_line(int argc, char** argv) {
   CommandLine out;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
-
-    // Global flags are recognized only before the subcommand/address. Once a
-    // command is selected, all remaining arguments belong to it. This matters
-    // for SSH remote commands and OpenSSH-compatible flags.
     if (out.command.empty()) {
       if (is_help(arg)) {
         out.show_help = true;
@@ -397,10 +394,10 @@ std::string usage() {
       << "                                             Proxy selected services to localhost\n"
       << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
       << "                                             Run system OpenSSH through Tailcat\n"
+      << "  tailcat cp [scp options] SOURCE DEST      Copy with system scp through Tailcat\n"
       << "  tailcat forward [--bind=ADDR] TCADDR [LOCAL:]REMOTE...\n"
       << "                                             Forward local TCP through Tailcat\n"
       << "  tailcat browse ...                        Open a forwarded HTTP service\n"
-      << "  tailcat cp ...                            Copy files\n"
       << "  tailcat recv ...                          Receive files\n"
       << "  tailcat socks ...                         Run a SOCKS proxy\n"
       << "  tailcat ping <tc-address>                 Probe a peer over DERP\n"
@@ -435,9 +432,12 @@ int run(const CommandLine& cli) {
   if (cli.command.rfind("tc", 0) == 0) {
     return run_client(cli.command, cli.args, cli.verbose);
   }
+  if (const auto extra = run_extra_command(cli.command, cli.args, cli.verbose)) {
+    return *extra;
+  }
 
   static const std::unordered_set<std::string> commands = {
-      "browse", "cp", "recv", "socks", "genkey", "ls"};
+      "browse", "recv", "socks", "genkey", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n"
