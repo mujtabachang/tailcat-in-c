@@ -136,6 +136,7 @@ struct WireGuardPeerEngine::Impl {
 
     switch (type) {
       case MESSAGE_HANDSHAKE_INITIATION: {
+        if (packet.size() != sizeof(message_handshake_initiation)) return result;
         message_handshake_initiation message{};
         std::memcpy(&message, packet.data(), sizeof(message));
         if (!wireguard_check_mac1(
@@ -158,6 +159,7 @@ struct WireGuardPeerEngine::Impl {
       }
 
       case MESSAGE_HANDSHAKE_RESPONSE: {
+        if (packet.size() != sizeof(message_handshake_response)) return result;
         message_handshake_response message{};
         std::memcpy(&message, packet.data(), sizeof(message));
         if (!wireguard_check_mac1(
@@ -177,6 +179,7 @@ struct WireGuardPeerEngine::Impl {
       }
 
       case MESSAGE_COOKIE_REPLY: {
+        if (packet.size() != sizeof(message_cookie_reply)) return result;
         message_cookie_reply message{};
         std::memcpy(&message, packet.data(), sizeof(message));
         auto* matched = peer_lookup_by_handshake(&device, message.receiver);
@@ -187,7 +190,7 @@ struct WireGuardPeerEngine::Impl {
       }
 
       case MESSAGE_TRANSPORT_DATA: {
-        if (packet.size() < 16U + WIREGUARD_AUTHTAG_LEN) return result;
+        if (packet.size() < sizeof(message_transport_data) + WIREGUARD_AUTHTAG_LEN) return result;
         const auto receiver = load_u32_le(packet.data() + 4U);
         auto* matched = peer_lookup_by_receiver(&device, receiver);
         if (matched != peer) return result;
@@ -197,12 +200,12 @@ struct WireGuardPeerEngine::Impl {
           return result;
         }
 
-        const auto encrypted_len = packet.size() - 16U;
+        const auto encrypted_len = packet.size() - sizeof(message_transport_data);
         if (encrypted_len < WIREGUARD_AUTHTAG_LEN) return result;
         const auto plaintext_len = encrypted_len - WIREGUARD_AUTHTAG_LEN;
         std::vector<std::uint8_t> plaintext(plaintext_len);
         const auto counter = load_u64_le(packet.data() + 8U);
-        if (!wireguard_decrypt_packet(plaintext.data(), packet.data() + 16U,
+        if (!wireguard_decrypt_packet(plaintext.data(), packet.data() + sizeof(message_transport_data),
                                       encrypted_len, counter, keypair)) {
           return result;
         }
@@ -247,12 +250,12 @@ struct WireGuardPeerEngine::Impl {
 
     std::vector<std::uint8_t> padded(padded_len, 0U);
     std::copy(packet.begin(), packet.end(), padded.begin());
-    std::vector<std::uint8_t> out(16U + padded_len + WIREGUARD_AUTHTAG_LEN, 0U);
+    std::vector<std::uint8_t> out(sizeof(message_transport_data) + padded_len + WIREGUARD_AUTHTAG_LEN, 0U);
     out[0] = MESSAGE_TRANSPORT_DATA;
     store_u32_le(out.data() + 4U, keypair->remote_index);
     const auto counter = keypair->sending_counter;
     store_u64_le(out.data() + 8U, counter);
-    wireguard_encrypt_packet(out.data() + 16U, padded.data(), padded.size(), keypair);
+    wireguard_encrypt_packet(out.data() + sizeof(message_transport_data), padded.data(), padded.size(), keypair);
 
     const auto now = wireguard_sys_now();
     peer->last_tx = now;
