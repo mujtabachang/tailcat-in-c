@@ -3,6 +3,7 @@
 
 #include "tailcat/forward_command.hpp"
 
+#include "tailcat/address_resolver.hpp"
 #include "tailcat/crypto.hpp"
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
@@ -65,15 +66,20 @@ DerpRegion resolve_forward_region(const ConnInfo& info) {
   return region_by_id(fetch_derp_map(std::string(kDefaultDerpMap)), info.region_id);
 }
 
-int run_forward_loop(std::string address, std::string bind_address,
+int run_forward_loop(std::string address_argument, std::string bind_address,
                      std::vector<TcpForwardMapping> mappings, bool verbose,
                      bool open_browser) {
+  const auto resolved = resolve_tailcat_address_argument(address_argument);
+  const auto address = resolved.address;
   auto info = parse_tailcat_addr(address);
   const auto region = resolve_forward_region(info);
   const auto node = primary_derp_node(region);
   const auto identity = generate_node_key();
 
   if (verbose) {
+    if (resolved.via_dns) {
+      std::cerr << "# resolved " << resolved.dns_name << " via tailcat= TXT\n";
+    }
     std::cerr << "# connecting forwarder through DERP region " << region.region_id;
     if (!region.region_code.empty()) std::cerr << " (" << region.region_code << ')';
     std::cerr << '\n';
@@ -133,7 +139,7 @@ int run_forward_command(const std::vector<std::string>& args, bool verbose) {
   }
 
   if (address.empty()) {
-    throw std::invalid_argument("forward requires a <tc-address>");
+    throw std::invalid_argument("forward requires a <tc-address-or-dns-name>");
   }
   if (mappings.empty()) {
     throw std::invalid_argument(
@@ -145,7 +151,7 @@ int run_forward_command(const std::vector<std::string>& args, bool verbose) {
 
 int run_browse_command(const std::vector<std::string>& args, bool verbose) {
   if (args.empty() || args.size() > 2U) {
-    throw std::invalid_argument("browse requires <tc-address> [remote-port]");
+    throw std::invalid_argument("browse requires <tc-address-or-dns-name> [remote-port]");
   }
   const auto remote_port = args.size() == 2U
                                ? parse_forward_port(args[1])
