@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="tailcat.png" alt="Tailcat" width="149" height="176">
+  <img src="tailcat.png" alt="Tailcat in C++" width="900">
 </p>
 
 # Tailcat in C++
