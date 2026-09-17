@@ -12,6 +12,7 @@ struct CommandLine {
   bool show_help = false;
   bool show_version = false;
   bool verbose = false;
+  std::string key_path;
   std::string command;
   std::vector<std::string> args;
 };
