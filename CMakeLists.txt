@@ -39,6 +39,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_lwip)
 
+# Build the lwIP protocol core under Tailcat's NO_SYS=1 configuration. No OS
+# socket backend, TAP/TUN port, examples, DHCP client, or lwIP socket API is
+# used: decrypted WireGuard IP packets are injected directly into this stack.
+set(LWIP_DIR ${tailcat_lwip_SOURCE_DIR})
+include(${LWIP_DIR}/src/Filelists.cmake)
+add_library(tailcat_lwip_stack STATIC
+    ${lwipcore_SRCS}
+    ${lwipcore4_SRCS}
+    ${lwipcore6_SRCS}
+    src/lwip_platform.cpp
+)
+set_target_properties(tailcat_lwip_stack PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(tailcat_lwip_stack
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip_port
+    ${LWIP_DIR}/src/include
+)
+target_link_libraries(tailcat_lwip_stack PUBLIC sodium)
+
 # wireguard-lwip is likewise consumed as selected C sources, not as an external
 # executable or network interface.
 FetchContent_Declare(
@@ -163,6 +182,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_ip_tests tests/ip_test.cpp)
     target_link_libraries(tailcat_ip_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_ip COMMAND tailcat_ip_tests)
+
+    add_executable(tailcat_lwip_tests tests/lwip_test.cpp)
+    target_link_libraries(tailcat_lwip_tests PRIVATE tailcat_lwip_stack)
+    add_test(NAME tailcat_lwip COMMAND tailcat_lwip_tests)
 
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
