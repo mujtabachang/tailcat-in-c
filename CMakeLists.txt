@@ -122,6 +122,36 @@ if(NOT CURL_FOUND)
   FetchContent_MakeAvailable(tailcat_curl)
 endif()
 
+# Upstream Tailcat terminates SSH inside the Tailcat process rather than
+# forwarding port 22 to a host sshd. libssh is the native C server/SFTP layer
+# used by this rewrite. Keep optional integrations disabled so releases have a
+# small, deterministic SSH dependency surface.
+set(WITH_GSSAPI OFF CACHE BOOL "" FORCE)
+set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(WITH_SFTP ON CACHE BOOL "" FORCE)
+set(WITH_SERVER ON CACHE BOOL "" FORCE)
+set(WITH_PCAP OFF CACHE BOOL "" FORCE)
+set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_NACL OFF CACHE BOOL "" FORCE)
+set(WITH_FIDO2 OFF CACHE BOOL "" FORCE)
+set(WITH_PKCS11_URI OFF CACHE BOOL "" FORCE)
+set(WITH_PKCS11_PROVIDER OFF CACHE BOOL "" FORCE)
+set(WITH_SYMBOL_VERSIONING OFF CACHE BOOL "" FORCE)
+set(WITH_EXEC OFF CACHE BOOL "" FORCE)
+set(UNIT_TESTING OFF CACHE BOOL "" FORCE)
+set(CLIENT_TESTING OFF CACHE BOOL "" FORCE)
+set(SERVER_TESTING OFF CACHE BOOL "" FORCE)
+set(GSSAPI_TESTING OFF CACHE BOOL "" FORCE)
+set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  tailcat_libssh
+  GIT_REPOSITORY https://github.com/libssh/libssh-mirror.git
+  GIT_TAG 07430deb9b97b751ec5ea5a7fc307f40bf042e0a
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_libssh)
+
 add_library(tailcat_core STATIC
     src/address_resolver.cpp
     src/cli.cpp
@@ -150,7 +180,7 @@ add_library(tailcat_core STATIC
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard tailcat_lwip_stack)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard tailcat_lwip_stack ssh::ssh)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
