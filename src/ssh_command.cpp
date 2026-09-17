@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -41,10 +42,10 @@ std::string current_executable_path() {
   std::vector<char> buffer(32768U, '\0');
   const auto length = GetModuleFileNameA(nullptr, buffer.data(),
                                          static_cast<DWORD>(buffer.size()));
-  if (length == 0U || length >= buffer.size()) {
+  if (length == 0U || static_cast<std::size_t>(length) >= buffer.size()) {
     throw std::runtime_error("GetModuleFileName failed");
   }
-  return std::string(buffer.data(), length);
+  return std::string(buffer.data(), static_cast<std::size_t>(length));
 #elif defined(__APPLE__)
   std::uint32_t size = 0;
   (void)_NSGetExecutablePath(nullptr, &size);
@@ -65,9 +66,17 @@ std::string current_executable_path() {
 #endif
 }
 
+bool has_control(std::string_view value) {
+  for (const char c : value) {
+    if (c == '\0' || c == '\r' || c == '\n') return true;
+  }
+  return false;
+}
+
 std::string unix_shell_quote(std::string_view value) {
-  if (value.find_first_of("\r\n\0") != std::string_view::npos) {
-    throw std::invalid_argument("ProxyCommand argument contains a control character");
+  if (has_control(value)) {
+    throw std::invalid_argument(
+        "ProxyCommand argument contains a control character");
   }
   std::string escaped;
   escaped.reserve(value.size() + 8U);
@@ -87,7 +96,7 @@ std::string unix_shell_quote(std::string_view value) {
 
 #ifdef _WIN32
 std::string windows_arg_quote(std::string_view value) {
-  if (value.find_first_of("\"%!\r\n\0") != std::string_view::npos) {
+  if (has_control(value) || value.find_first_of("\"%!") != std::string_view::npos) {
     throw std::invalid_argument("ProxyCommand argument is unsafe for cmd.exe");
   }
   std::string out;
@@ -135,7 +144,9 @@ ParsedSshArgs parse_ssh_args(const std::vector<std::string>& args) {
       continue;
     }
     if (options && (arg == "-p" || arg == "--port")) {
-      if (++i >= args.size()) throw std::invalid_argument(arg + " requires a value");
+      if (++i >= args.size()) {
+        throw std::invalid_argument(arg + " requires a value");
+      }
       out.port = args[i];
       continue;
     }
@@ -148,8 +159,8 @@ ParsedSshArgs parse_ssh_args(const std::vector<std::string>& args) {
       continue;
     }
     if (options && arg == "--skip-dns-safety-check") {
-      // DNS-name resolution is added separately. For direct tc addresses this
-      // flag is harmless and accepted for CLI compatibility.
+      // Accepted for upstream CLI compatibility. It has no effect for direct
+      // tc addresses; DNS-name resolution is handled separately.
       continue;
     }
     out.destination = arg;
@@ -165,19 +176,27 @@ ParsedSshArgs parse_ssh_args(const std::vector<std::string>& args) {
 }
 
 int exec_ssh(const std::vector<std::string>& args) {
-  std::vector<char*> argv;
-  argv.reserve(args.size() + 1U);
-  for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
-  argv.push_back(nullptr);
 #ifdef _WIN32
+  std::vector<const char*> argv;
+  argv.reserve(args.size() + 1U);
+  for (const auto& arg : args) argv.push_back(arg.c_str());
+  argv.push_back(nullptr);
   const auto rc = _spawnvp(_P_WAIT, "ssh", argv.data());
   if (rc == -1) {
-    throw std::runtime_error(std::string("failed to run ssh.exe: ") + std::strerror(errno));
+    throw std::runtime_error(std::string("failed to run ssh.exe: ") +
+                             std::strerror(errno));
   }
   return static_cast<int>(rc);
 #else
+  std::vector<char*> argv;
+  argv.reserve(args.size() + 1U);
+  for (const auto& arg : args) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
   execvp("ssh", argv.data());
-  throw std::runtime_error(std::string("failed to exec ssh: ") + std::strerror(errno));
+  throw std::runtime_error(std::string("failed to exec ssh: ") +
+                           std::strerror(errno));
 #endif
 }
 
