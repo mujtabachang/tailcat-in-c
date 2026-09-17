@@ -16,6 +16,7 @@
 #include "tailcat/saved_key.hpp"
 #include "tailcat/ssh_command.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -339,16 +340,40 @@ int run_default_server(bool verbose, const std::string& key_name) {
   }
 }
 
+std::vector<Key32> parse_allow_list(std::string_view spec) {
+  if (spec.empty()) throw std::invalid_argument("--allow requires a value");
+  if (spec == "none") return {};
+  std::vector<Key32> keys;
+  std::size_t start = 0U;
+  while (start <= spec.size()) {
+    const auto comma = spec.find(',', start);
+    const auto end = comma == std::string_view::npos ? spec.size() : comma;
+    const auto item = spec.substr(start, end - start);
+    if (item.empty()) throw std::invalid_argument("--allow contains an empty key");
+    keys.push_back(parse_node_public_text(item));
+    if (comma == std::string_view::npos) break;
+    start = comma + 1U;
+  }
+  return keys;
+}
+
 int run_serve(const std::vector<std::string>& args, bool verbose,
               const std::string& key_name) {
   std::optional<bool> psk_override;
+  std::optional<std::vector<Key32>> allow_keys;
   bool ssh_service = false;
   std::vector<std::uint16_t> ports;
-  for (const auto& arg : args) {
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    const auto& arg = args[i];
     if (arg == "--psk=false") {
       psk_override = false;
     } else if (arg == "--psk=true") {
       psk_override = true;
+    } else if (arg == "--allow") {
+      if (++i >= args.size()) throw std::invalid_argument("--allow requires a value");
+      allow_keys = parse_allow_list(args[i]);
+    } else if (arg.rfind("--allow=", 0) == 0) {
+      allow_keys = parse_allow_list(arg.substr(8U));
     } else if (arg == "ssh") {
       ssh_service = true;
       ports.push_back(22U);
@@ -376,10 +401,20 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
   auto server = make_server_bootstrap(psk_override, key_name);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
   derp.connect();
-  TailcatServerDataPlane data(derp, server.identity, server.psk);
+  TailcatServerDataPlane::AllowPeer allow;
+  if (allow_keys) {
+    const auto configured = *allow_keys;
+    allow = [configured](const Key32& peer) {
+      return std::find(configured.begin(), configured.end(), peer) != configured.end();
+    };
+  }
+  TailcatServerDataPlane data(derp, server.identity, server.psk, std::move(allow));
   ServedTcpPorts forwarding(data, std::move(ports));
   log_server_address(server, verbose);
   if (verbose) {
+    if (allow_keys) {
+      std::cerr << "# allowing " << allow_keys->size() << " client key(s)\n";
+    }
     for (const auto port : forwarding.ports()) {
       if (port == 22U && ssh_service) {
         std::cerr << "# serving SSH -> 127.0.0.1:22\n";
@@ -444,7 +479,7 @@ std::string usage() {
       << "Usage:\n"
       << "  tailcat [options]                         Listen for a pipe connection\n"
       << "  tailcat <tc-address> [port]               Connect to a peer\n"
-      << "  tailcat serve [--psk=false] (ssh|PORT)...\n"
+      << "  tailcat serve [--psk=false] [--allow=NODEKEY,...] (ssh|PORT)...\n"
       << "                                             Proxy selected services to localhost\n"
       << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
       << "                                             Run system OpenSSH through Tailcat\n"
