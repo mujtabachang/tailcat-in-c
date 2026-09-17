@@ -11,6 +11,7 @@
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/rendezvous.hpp"
+#include "tailcat/ssh_command.hpp"
 
 #include <array>
 #include <chrono>
@@ -42,7 +43,9 @@ constexpr std::string_view kVersion = TAILCAT_VERSION;
 constexpr std::string_view kDefaultDerpMap = "https://tailcat.dev/derpmap.json";
 
 bool is_help(std::string_view arg) { return arg == "-h" || arg == "--help"; }
-bool is_version(std::string_view arg) { return arg == "-V" || arg == "--version" || arg == "version"; }
+bool is_version(std::string_view arg) {
+  return arg == "-V" || arg == "--version" || arg == "version";
+}
 
 int unavailable(std::string_view command) {
   std::cerr << "tailcat: '" << command
@@ -69,7 +72,8 @@ DerpRegion resolve_region(const ConnInfo& info) {
   if (info.region_id == 0) {
     throw std::runtime_error("tailcat address contains no DERP region");
   }
-  return region_by_id(fetch_derp_map(std::string(kDefaultDerpMap)), info.region_id);
+  return region_by_id(fetch_derp_map(std::string(kDefaultDerpMap)),
+                      info.region_id);
 }
 
 std::uint16_t parse_port(std::string_view text) {
@@ -83,13 +87,17 @@ std::uint16_t parse_port(std::string_view text) {
 }
 
 int run_parse(const std::vector<std::string>& args) {
-  if (args.size() != 1U) throw std::invalid_argument("parse requires one <tc-address>");
+  if (args.size() != 1U) {
+    throw std::invalid_argument("parse requires one <tc-address>");
+  }
   const auto info = parse_tailcat_addr(args[0]);
   std::cout << "serverPublic=" << key_hex(info.server_public) << '\n';
   if (info.server_disco_public) {
-    std::cout << "serverDiscoPublic=" << key_hex(*info.server_disco_public) << '\n';
+    std::cout << "serverDiscoPublic=" << key_hex(*info.server_disco_public)
+              << '\n';
   }
-  std::cout << "presharedKey=" << (info.preshared_key ? "present" : "absent") << '\n';
+  std::cout << "presharedKey=" << (info.preshared_key ? "present" : "absent")
+            << '\n';
   std::cout << "regionID=" << info.region_id << '\n';
   std::cout << "embeddedRegions=" << info.regions.size() << '\n';
   return 0;
@@ -111,8 +119,8 @@ std::shared_ptr<InputState> start_stdin_reader() {
       if (count > 0) {
         std::vector<std::uint8_t> chunk(static_cast<std::size_t>(count));
         for (std::streamsize i = 0; i < count; ++i) {
-          chunk[static_cast<std::size_t>(i)] =
-              static_cast<std::uint8_t>(static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]));
+          chunk[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(
+              static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]));
         }
         std::lock_guard<std::mutex> lock(state->mutex);
         state->chunks.push_back(std::move(chunk));
@@ -128,9 +136,11 @@ std::shared_ptr<InputState> start_stdin_reader() {
 int run_client(std::string_view address, const std::vector<std::string>& args,
                bool verbose) {
   if (args.size() > 1U) {
-    throw std::invalid_argument("connect accepts at most one TCP port argument");
+    throw std::invalid_argument(
+        "connect accepts at most one TCP port argument");
   }
-  const auto port = args.empty() ? static_cast<std::uint16_t>(1U) : parse_port(args[0]);
+  const auto port =
+      args.empty() ? static_cast<std::uint16_t>(1U) : parse_port(args[0]);
   auto info = parse_tailcat_addr(address);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
@@ -149,7 +159,9 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
 
   const auto connect_deadline = std::chrono::steady_clock::now() + 15s;
   while (!stream->connected()) {
-    if (stream->failed()) throw std::runtime_error("TCP connect failed: " + stream->error());
+    if (stream->failed()) {
+      throw std::runtime_error("TCP connect failed: " + stream->error());
+    }
     if (std::chrono::steady_clock::now() >= connect_deadline) {
       throw std::runtime_error("timed out establishing Tailcat TCP stream");
     }
@@ -163,7 +175,9 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
 
   for (;;) {
     (void)data.pump_for(20ms);
-    if (stream->failed()) throw std::runtime_error("Tailcat TCP stream failed: " + stream->error());
+    if (stream->failed()) {
+      throw std::runtime_error("Tailcat TCP stream failed: " + stream->error());
+    }
 
     const auto received = stream->read_available();
     if (!received.empty()) {
@@ -203,7 +217,9 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
 }
 
 int run_ping(const std::vector<std::string>& args, bool verbose) {
-  if (args.size() != 1U) throw std::invalid_argument("ping requires one <tc-address>");
+  if (args.size() != 1U) {
+    throw std::invalid_argument("ping requires one <tc-address>");
+  }
   const auto info = parse_tailcat_addr(args[0]);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
@@ -214,8 +230,11 @@ int run_ping(const std::vector<std::string>& args, bool verbose) {
   const auto latency = rendezvous_client(derp, identity, disco.public_key,
                                          info.server_public, 10s);
   std::cout << "pong in " << latency.count() << "ms via DERP(";
-  if (!region.region_code.empty()) std::cout << region.region_code;
-  else std::cout << region.region_id;
+  if (!region.region_code.empty()) {
+    std::cout << region.region_code;
+  } else {
+    std::cout << region.region_id;
+  }
   std::cout << ")\n";
   if (verbose) std::cerr << "# DERP relay " << node.host_name << '\n';
   return 0;
@@ -249,9 +268,12 @@ ServerBootstrap make_server_bootstrap(bool use_psk) {
 
 void log_server_address(const ServerBootstrap& server, bool verbose) {
   std::cerr << "# Selected bootstrap relay region " << server.region.region_id;
-  if (!server.region.region_name.empty()) std::cerr << ", " << server.region.region_name;
+  if (!server.region.region_name.empty()) {
+    std::cerr << ", " << server.region.region_name;
+  }
   std::cerr << '\n';
-  std::cerr << "# 🐈 Server listening with new address: " << server.address << '\n';
+  std::cerr << "# 🐈 Server listening with new address: " << server.address
+            << '\n';
   if (verbose) std::cerr << "# DERP relay " << server.node.host_name << '\n';
   if (!server.psk) {
     std::cerr << "# ⚠️ WARNING: serving without a WireGuard PSK\n";
@@ -271,7 +293,9 @@ int run_default_server(bool verbose) {
     (void)data.pump_for(20ms);
     if (!stream) stream = listener->accept();
     if (!stream) continue;
-    if (stream->failed()) throw std::runtime_error("Tailcat TCP stream failed: " + stream->error());
+    if (stream->failed()) {
+      throw std::runtime_error("Tailcat TCP stream failed: " + stream->error());
+    }
 
     const auto received = stream->read_available();
     if (!received.empty()) {
@@ -295,13 +319,17 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
       use_psk = false;
     } else if (arg == "--psk=true") {
       use_psk = true;
+    } else if (arg == "ssh") {
+      ports.push_back(22U);
     } else if (!arg.empty() && arg[0] == '-') {
       throw std::invalid_argument("unsupported serve option: " + arg);
     } else {
       ports.push_back(parse_port(arg));
     }
   }
-  if (ports.empty()) throw std::invalid_argument("serve requires one or more TCP ports");
+  if (ports.empty()) {
+    throw std::invalid_argument("serve requires ssh or one or more TCP ports");
+  }
 
   auto server = make_server_bootstrap(use_psk);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
@@ -311,7 +339,12 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
   log_server_address(server, verbose);
   if (verbose) {
     for (const auto port : forwarding.ports()) {
-      std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port << '\n';
+      if (port == 22U) {
+        std::cerr << "# serving SSH -> 127.0.0.1:22\n";
+      } else {
+        std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port
+                  << '\n';
+      }
     }
   }
 
@@ -327,23 +360,29 @@ CommandLine parse_command_line(int argc, char** argv) {
   CommandLine out;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
-    if (is_help(arg)) {
-      out.show_help = true;
-      continue;
+
+    // Global flags are recognized only before the subcommand/address. Once a
+    // command is selected, all remaining arguments belong to it. This matters
+    // for SSH remote commands and OpenSSH-compatible flags.
+    if (out.command.empty()) {
+      if (is_help(arg)) {
+        out.show_help = true;
+        continue;
+      }
+      if (is_version(arg)) {
+        out.show_version = true;
+        continue;
+      }
+      if (arg == "-v" || arg == "--verbose") {
+        out.verbose = true;
+        continue;
+      }
+      if (!arg.empty() && arg[0] != '-') {
+        out.command = arg;
+        continue;
+      }
     }
-    if (is_version(arg)) {
-      out.show_version = true;
-      continue;
-    }
-    if (arg == "-v" || arg == "--verbose") {
-      out.verbose = true;
-      continue;
-    }
-    if (out.command.empty() && !arg.empty() && arg[0] != '-') {
-      out.command = arg;
-    } else {
-      out.args.push_back(arg);
-    }
+    out.args.push_back(arg);
   }
   return out;
 }
@@ -352,20 +391,21 @@ std::string usage() {
   std::ostringstream out;
   out << "tailcat " << kVersion << " (native C++20)\n\n"
       << "Usage:\n"
-      << "  tailcat [options]                 Listen for a pipe connection\n"
-      << "  tailcat <tc-address> [port]       Connect to a peer\n"
-      << "  tailcat serve [--psk=false] PORT...\n"
-      << "                                     Proxy selected TCP ports to localhost\n"
+      << "  tailcat [options]                         Listen for a pipe connection\n"
+      << "  tailcat <tc-address> [port]               Connect to a peer\n"
+      << "  tailcat serve [--psk=false] (ssh|PORT)...\n"
+      << "                                             Proxy selected services to localhost\n"
+      << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
+      << "                                             Run system OpenSSH through Tailcat\n"
       << "  tailcat forward [--bind=ADDR] TCADDR [LOCAL:]REMOTE...\n"
-      << "                                     Forward local TCP through tailcat\n"
-      << "  tailcat browse ...                Open a forwarded HTTP service\n"
-      << "  tailcat cp ...                    Copy files\n"
-      << "  tailcat recv ...                  Receive files\n"
-      << "  tailcat ssh ...                   SSH through tailcat\n"
-      << "  tailcat socks ...                 Run a SOCKS proxy\n"
-      << "  tailcat ping <tc-address>         Probe a peer over DERP\n"
-      << "  tailcat genkey ...                Generate reusable connection material\n"
-      << "  tailcat parse <tc-address>        Decode a tailcat address\n\n"
+      << "                                             Forward local TCP through Tailcat\n"
+      << "  tailcat browse ...                        Open a forwarded HTTP service\n"
+      << "  tailcat cp ...                            Copy files\n"
+      << "  tailcat recv ...                          Receive files\n"
+      << "  tailcat socks ...                         Run a SOCKS proxy\n"
+      << "  tailcat ping <tc-address>                 Probe a peer over DERP\n"
+      << "  tailcat genkey ...                        Generate reusable connection material\n"
+      << "  tailcat parse <tc-address>                Decode a tailcat address\n\n"
       << "Options:\n"
       << "  -h, --help       Show this help\n"
       << "  -V, --version    Show version\n"
@@ -388,14 +428,20 @@ int run(const CommandLine& cli) {
   if (cli.command == "parse") return run_parse(cli.args);
   if (cli.command == "ping") return run_ping(cli.args, cli.verbose);
   if (cli.command == "serve") return run_serve(cli.args, cli.verbose);
-  if (cli.command == "forward") return run_forward_command(cli.args, cli.verbose);
-  if (cli.command.rfind("tc", 0) == 0) return run_client(cli.command, cli.args, cli.verbose);
+  if (cli.command == "forward") {
+    return run_forward_command(cli.args, cli.verbose);
+  }
+  if (cli.command == "ssh") return run_ssh_command(cli.args, cli.verbose);
+  if (cli.command.rfind("tc", 0) == 0) {
+    return run_client(cli.command, cli.args, cli.verbose);
+  }
 
   static const std::unordered_set<std::string> commands = {
-      "browse", "cp", "recv", "ssh", "socks", "genkey", "ls"};
+      "browse", "cp", "recv", "socks", "genkey", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
-  std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n" << usage();
+  std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n"
+            << usage();
   return 2;
 }
 
