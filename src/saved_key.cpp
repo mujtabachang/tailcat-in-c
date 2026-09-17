@@ -16,6 +16,7 @@
 #include <string_view>
 
 #ifdef _WIN32
+#include <io.h>
 #include <sys/stat.h>
 #else
 #include <sys/stat.h>
@@ -56,7 +57,9 @@ Key32 parse_key(std::string_view text, std::string_view prefix) {
 
 void make_private(const std::string& path) {
 #ifdef _WIN32
-  (void)_chmod(path.c_str(), _S_IREAD | _S_IWRITE);
+  if (_chmod(path.c_str(), _S_IREAD | _S_IWRITE) != 0) {
+    throw std::runtime_error("failed to set private key permissions on " + path);
+  }
 #else
   if (chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0) {
     throw std::runtime_error("failed to set private key permissions on " + path);
