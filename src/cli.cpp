@@ -222,7 +222,7 @@ int run_ping(const std::vector<std::string>& args, bool verbose) {
 
 struct ServerBootstrap {
   NodeKeyPair identity;
-  DiscoKeyPair disco;
+  NodeKeyPair disco;
   std::optional<Key32> psk;
   DerpRegion region;
   DerpNode node;
