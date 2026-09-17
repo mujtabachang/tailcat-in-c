@@ -140,6 +140,7 @@ add_library(tailcat_core STATIC
     src/wireguard_engine.cpp
     src/wireguard_derp.cpp
     src/lwip_stack.cpp
+    src/lwip_udp.cpp
     src/data_plane.cpp
     src/host_tcp.cpp
     src/port_forward.cpp
@@ -188,6 +189,10 @@ if(TAILCAT_BUILD_TESTS)
     target_link_libraries(tailcat_lwip_tcp_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_lwip_tcp COMMAND tailcat_lwip_tcp_tests)
 
+    add_executable(tailcat_lwip_udp_tests tests/lwip_udp_test.cpp)
+    target_link_libraries(tailcat_lwip_udp_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_lwip_udp COMMAND tailcat_lwip_udp_tests)
+
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_derp COMMAND tailcat_derp_tests)
@@ -230,6 +235,7 @@ if(TAILCAT_BUILD_TESTS)
       tailcat_ip_tests
       tailcat_lwip_tests
       tailcat_lwip_tcp_tests
+      tailcat_lwip_udp_tests
       tailcat_derp_tests
       tailcat_rendezvous_tests
       tailcat_wireguard_tests
