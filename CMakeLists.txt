@@ -14,6 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
 find_package(unofficial-sodium CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 add_library(tailcat_core
@@ -25,7 +26,7 @@ add_library(tailcat_core
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC unofficial-sodium::sodium OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(tailcat_core PUBLIC unofficial-sodium::sodium nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
