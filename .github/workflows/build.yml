@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main, "rewrite/**"]
+    branches: [main, "port/**"]
   pull_request:
 
 permissions:
@@ -16,18 +16,37 @@ jobs:
         include:
           - os: ubuntu-latest
             preset: linux
+            triplet: x64-linux
           - os: macos-latest
             preset: macos
+            triplet: arm64-osx
           - os: windows-latest
             preset: windows
+            triplet: x64-windows-static
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+          vcpkgGitCommitId: '386d7c478221b7ee0c97bfe6ea61dcf65121d564'
+          runVcpkgInstall: true
+          vcpkgJsonGlob: '**/vcpkg.json'
+
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        shell: bash
+        run: >-
+          cmake --preset "${{ matrix.preset }}"
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}"
+
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
