@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 set(TAILCAT_VERSION "0.1.0" CACHE STRING "Tailcat semantic version")
-string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TAILCAT_PROJECT_VERSION "${TAILCAT_VERSION}")
+string(REGEX MATCH "^[0-9]+\.[0-9]+\.[0-9]+" TAILCAT_PROJECT_VERSION "${TAILCAT_VERSION}")
 if(NOT TAILCAT_PROJECT_VERSION)
   message(FATAL_ERROR "TAILCAT_VERSION must start with MAJOR.MINOR.PATCH")
 endif()
@@ -144,6 +144,35 @@ set(SERVER_TESTING OFF CACHE BOOL "" FORCE)
 set(GSSAPI_TESTING OFF CACHE BOOL "" FORCE)
 set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
+
+# GitHub's MinGW Windows image does not ship OpenSSL development files. Pin
+# Mbed TLS and let libssh use it as its crypto backend there. Linux/macOS keep
+# the platform OpenSSL already available on their build images. The Mbed TLS
+# targets are created before libssh's FindMbedTLS module runs; the cache values
+# satisfy that module without relying on an installed copy.
+if(WIN32)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+  set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    tailcat_mbedtls
+    GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG 068ff080b369adfac81509f9b57b2afabaf82dc5
+    GIT_SHALLOW FALSE
+  )
+  FetchContent_MakeAvailable(tailcat_mbedtls)
+  set(WITH_MBEDTLS ON CACHE BOOL "" FORCE)
+  set(MBEDTLS_INCLUDE_DIR "${tailcat_mbedtls_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+  set(MBEDTLS_SSL_LIBRARY mbedtls CACHE STRING "" FORCE)
+  set(MBEDTLS_CRYPTO_LIBRARY mbedcrypto CACHE STRING "" FORCE)
+  set(MBEDTLS_X509_LIBRARY mbedx509 CACHE STRING "" FORCE)
+else()
+  set(WITH_MBEDTLS OFF CACHE BOOL "" FORCE)
+endif()
+
 FetchContent_Declare(
   tailcat_libssh
   GIT_REPOSITORY https://github.com/libssh/libssh-mirror.git
