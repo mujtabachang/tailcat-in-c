@@ -17,8 +17,6 @@ option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 include(FetchContent)
 find_package(Threads REQUIRED)
 
-# DERP authentication uses the same X25519 + XSalsa20-Poly1305 NaCl box
-# construction as tailscale/types/key. Build libsodium natively on every OS.
 set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
   tailcat_sodium
@@ -28,8 +26,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_sodium)
 
-# lwIP is the userspace TCP/IP stack. Fetch it source-only: its upstream root
-# CMake project builds example applications that Tailcat neither needs nor uses.
 FetchContent_Declare(
   tailcat_lwip
   GIT_REPOSITORY https://github.com/lwip-tcpip/lwip.git
@@ -39,9 +35,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_lwip)
 
-# Build only lwIP's protocol core and IPv6 implementation under Tailcat's
-# NO_SYS=1 configuration. Tailcat virtual addresses are IPv6, while host-side
-# forward targets remain ordinary host sockets and can still be IPv4.
 set(LWIP_DIR ${tailcat_lwip_SOURCE_DIR})
 set(LWIP_EXCLUDE_SLIPIF TRUE)
 include(${LWIP_DIR}/src/Filelists.cmake)
@@ -59,8 +52,6 @@ target_include_directories(tailcat_lwip_stack
 )
 target_link_libraries(tailcat_lwip_stack PUBLIC sodium)
 
-# wireguard-lwip is likewise consumed as selected C sources, not as an external
-# executable or network interface.
 FetchContent_Declare(
   tailcat_wireguard_src
   GIT_REPOSITORY https://github.com/smartalock/wireguard-lwip.git
@@ -94,7 +85,6 @@ if(MSVC)
   target_compile_options(tailcat_wireguard PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/tailcat/wireguard_compat.h")
 endif()
 
-# DERP map parsing only; header-only and pinned for reproducible builds.
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
 set(JSON_Install OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
@@ -105,9 +95,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_json)
 
-# libcurl is used only as a verified TLS carrier in CONNECT_ONLY mode and for
-# fetching the public DERP map. Tailcat itself writes the HTTP upgrade bytes
-# and implements the DERP protocol.
 find_package(CURL QUIET)
 if(NOT CURL_FOUND)
   set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
@@ -149,6 +136,7 @@ add_library(tailcat_core STATIC
     src/wireguard_derp.cpp
     src/lwip_stack.cpp
     src/data_plane.cpp
+    src/host_tcp.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
@@ -168,7 +156,6 @@ endif()
 
 add_executable(tailcat src/main.cpp)
 target_link_libraries(tailcat PRIVATE tailcat_core)
-
 install(TARGETS tailcat RUNTIME DESTINATION bin)
 
 if(TAILCAT_BUILD_TESTS)
@@ -213,5 +200,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_data_plane_tests tests/data_plane_test.cpp)
     target_link_libraries(tailcat_data_plane_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_data_plane COMMAND tailcat_data_plane_tests)
+
+    add_executable(tailcat_host_tcp_tests tests/host_tcp_test.cpp)
+    target_link_libraries(tailcat_host_tcp_tests PRIVATE tailcat_core Threads::Threads)
+    add_test(NAME tailcat_host_tcp COMMAND tailcat_host_tcp_tests)
   endif()
 endif()
