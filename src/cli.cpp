@@ -6,6 +6,7 @@
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
+#include "tailcat/forward_command.hpp"
 #include "tailcat/platform.hpp"
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
@@ -355,7 +356,8 @@ std::string usage() {
       << "  tailcat <tc-address> [port]       Connect to a peer\n"
       << "  tailcat serve [--psk=false] PORT...\n"
       << "                                     Proxy selected TCP ports to localhost\n"
-      << "  tailcat forward ...               Forward local ports\n"
+      << "  tailcat forward [--bind=ADDR] TCADDR [LOCAL:]REMOTE...\n"
+      << "                                     Forward local TCP through tailcat\n"
       << "  tailcat browse ...                Open a forwarded HTTP service\n"
       << "  tailcat cp ...                    Copy files\n"
       << "  tailcat recv ...                  Receive files\n"
@@ -386,10 +388,11 @@ int run(const CommandLine& cli) {
   if (cli.command == "parse") return run_parse(cli.args);
   if (cli.command == "ping") return run_ping(cli.args, cli.verbose);
   if (cli.command == "serve") return run_serve(cli.args, cli.verbose);
+  if (cli.command == "forward") return run_forward_command(cli.args, cli.verbose);
   if (cli.command.rfind("tc", 0) == 0) return run_client(cli.command, cli.args, cli.verbose);
 
   static const std::unordered_set<std::string> commands = {
-      "forward", "browse", "cp", "recv", "ssh", "socks", "genkey", "ls"};
+      "browse", "cp", "recv", "ssh", "socks", "genkey", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n" << usage();
