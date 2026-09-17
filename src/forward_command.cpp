@@ -8,6 +8,7 @@
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
 #include "tailcat/local_forward.hpp"
+#include "tailcat/platform.hpp"
 #include "tailcat/protocol.hpp"
 
 #include <chrono>
@@ -64,6 +65,47 @@ DerpRegion resolve_forward_region(const ConnInfo& info) {
   return region_by_id(fetch_derp_map(std::string(kDefaultDerpMap)), info.region_id);
 }
 
+int run_forward_loop(std::string address, std::string bind_address,
+                     std::vector<TcpForwardMapping> mappings, bool verbose,
+                     bool open_browser) {
+  auto info = parse_tailcat_addr(address);
+  const auto region = resolve_forward_region(info);
+  const auto node = primary_derp_node(region);
+  const auto identity = generate_node_key();
+
+  if (verbose) {
+    std::cerr << "# connecting forwarder through DERP region " << region.region_id;
+    if (!region.region_code.empty()) std::cerr << " (" << region.region_code << ')';
+    std::cerr << '\n';
+  }
+
+  DerpHttpClient derp(node, identity, "tailcat");
+  derp.connect();
+  TailcatClientDataPlane data(derp, identity, std::move(info));
+  data.connect(15s);
+  LocalTcpForwarder forwarder(data, std::move(mappings), bind_address);
+
+  for (const auto& mapping : forwarder.mappings()) {
+    std::cerr << "# forwarding " << bind_address << ':' << mapping.local_port
+              << " -> tailcat:" << mapping.remote_port << '\n';
+  }
+
+  if (open_browser) {
+    if (forwarder.mappings().size() != 1U) {
+      throw std::runtime_error("browse requires exactly one forward mapping");
+    }
+    const auto port = forwarder.mappings().front().local_port;
+    const auto url = std::string("http://127.0.0.1:") + std::to_string(port) + "/";
+    std::cerr << "# opening " << url << '\n';
+    open_system_url(url);
+  }
+
+  for (;;) {
+    (void)data.pump_for(10ms);
+    forwarder.poll();
+  }
+}
+
 }  // namespace
 
 int run_forward_command(const std::vector<std::string>& args, bool verbose) {
@@ -97,33 +139,21 @@ int run_forward_command(const std::vector<std::string>& args, bool verbose) {
     throw std::invalid_argument(
         "forward requires one or more [local:]remote port mappings");
   }
+  return run_forward_loop(std::move(address), std::move(bind_address),
+                          std::move(mappings), verbose, false);
+}
 
-  auto info = parse_tailcat_addr(address);
-  const auto region = resolve_forward_region(info);
-  const auto node = primary_derp_node(region);
-  const auto identity = generate_node_key();
-
-  if (verbose) {
-    std::cerr << "# connecting forwarder through DERP region " << region.region_id;
-    if (!region.region_code.empty()) std::cerr << " (" << region.region_code << ')';
-    std::cerr << '\n';
+int run_browse_command(const std::vector<std::string>& args, bool verbose) {
+  if (args.empty() || args.size() > 2U) {
+    throw std::invalid_argument("browse requires <tc-address> [remote-port]");
   }
-
-  DerpHttpClient derp(node, identity, "tailcat");
-  derp.connect();
-  TailcatClientDataPlane data(derp, identity, std::move(info));
-  data.connect(15s);
-  LocalTcpForwarder forwarder(data, std::move(mappings), bind_address);
-
-  for (const auto& mapping : forwarder.mappings()) {
-    std::cerr << "# forwarding " << bind_address << ':' << mapping.local_port
-              << " -> tailcat:" << mapping.remote_port << '\n';
-  }
-
-  for (;;) {
-    (void)data.pump_for(10ms);
-    forwarder.poll();
-  }
+  const auto remote_port = args.size() == 2U
+                               ? parse_forward_port(args[1])
+                               : static_cast<std::uint16_t>(80U);
+  std::vector<TcpForwardMapping> mappings;
+  mappings.push_back(TcpForwardMapping{0U, remote_port});
+  return run_forward_loop(args[0], "127.0.0.1", std::move(mappings), verbose,
+                          true);
 }
 
 }  // namespace tailcat
