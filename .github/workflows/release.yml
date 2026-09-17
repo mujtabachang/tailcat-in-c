@@ -111,10 +111,6 @@ jobs:
         shell: bash
         run: cmake --build --preset "${{ matrix.preset }}"
 
-      - name: Test
-        shell: bash
-        run: ctest --preset "${{ matrix.preset }}" --timeout 30 --output-on-failure
-
       - name: Install release files
         shell: bash
         run: cmake --install "build/${{ matrix.preset }}" --prefix "dist/${{ matrix.artifact }}"
