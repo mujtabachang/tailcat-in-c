@@ -26,8 +26,20 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_sodium)
 
-# libcurl is used only as a verified TLS carrier in CONNECT_ONLY mode. Tailcat
-# itself writes the HTTP upgrade bytes and implements the DERP protocol.
+# DERP map parsing only; header-only and pinned for reproducible builds.
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  tailcat_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG c41152e62092c16cf4fc4625becacc3eb9d9319f
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_json)
+
+# libcurl is used only as a verified TLS carrier in CONNECT_ONLY mode and for
+# fetching the public DERP map. Tailcat itself writes the HTTP upgrade bytes
+# and implements the DERP protocol.
 find_package(CURL QUIET)
 if(NOT CURL_FOUND)
   set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
@@ -36,9 +48,9 @@ if(NOT CURL_FOUND)
   set(CURL_DISABLE_TESTS ON CACHE BOOL "" FORCE)
   set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
   set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
-  set(CURL_ZLIB OFF CACHE STRING "" FORCE)
-  set(CURL_BROTLI OFF CACHE STRING "" FORCE)
-  set(CURL_ZSTD OFF CACHE STRING "" FORCE)
+  set(CURL_ZLIB OFF CACHE BOOL "" FORCE)
+  set(CURL_BROTLI OFF CACHE BOOL "" FORCE)
+  set(CURL_ZSTD OFF CACHE BOOL "" FORCE)
   set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
   set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
   if(WIN32)
@@ -62,11 +74,12 @@ add_library(tailcat_core
     src/crypto.cpp
     src/derp.cpp
     src/derp_http.cpp
+    src/derp_map.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)

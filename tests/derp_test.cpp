@@ -9,8 +9,35 @@
 #include <string>
 #include <vector>
 
+namespace {
+
+tailcat::Key32 from_hex(const std::string& hex) {
+  assert(hex.size() == 64U);
+  tailcat::Key32 out{};
+  auto nibble = [](char c) -> unsigned {
+    if (c >= '0' && c <= '9') return static_cast<unsigned>(c - '0');
+    if (c >= 'a' && c <= 'f') return 10U + static_cast<unsigned>(c - 'a');
+    assert(false);
+    return 0U;
+  };
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = static_cast<std::uint8_t>((nibble(hex[i * 2U]) << 4U) | nibble(hex[i * 2U + 1U]));
+  }
+  return out;
+}
+
+}  // namespace
+
 int main() {
   tailcat::initialize_crypto();
+
+  // Exact Tailcat disco-key derivation vector: HMAC-SHA256(node-private,
+  // "github.com/tailscale/tailcat disco key v1"), then X25519 public key.
+  tailcat::Key32 fixed_node{};
+  for (std::size_t i = 0; i < fixed_node.size(); ++i) fixed_node[i] = static_cast<std::uint8_t>(i);
+  const auto disco = tailcat::derive_disco_key(fixed_node);
+  assert(disco.private_key == from_hex("5d6a55ca01992289bc4cf4d6f738e00b4c175fe61be2dcdc576f8dd11ff42b5a"));
+  assert(disco.public_key == from_hex("4afe7a9e6fa02da88f7aa653e00ed0e717f2eecde754d77f5a4a8e248c2e6a6f"));
 
   const auto client = tailcat::generate_node_key();
   const auto server = tailcat::generate_node_key();

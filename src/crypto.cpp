@@ -6,7 +6,9 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
+#include <string_view>
 
 namespace tailcat {
 
@@ -30,6 +32,21 @@ NodeKeyPair generate_node_key() {
   out.private_key[0] &= 248U;
   out.private_key[31] &= 127U;
   out.private_key[31] |= 64U;
+  out.public_key = node_public_from_private(out.private_key);
+  return out;
+}
+
+NodeKeyPair derive_disco_key(const Key32& node_private_key) {
+  static constexpr std::string_view label = "github.com/tailscale/tailcat disco key v1";
+  NodeKeyPair out;
+  if (crypto_auth_hmacsha256(out.private_key.data(),
+                             reinterpret_cast<const unsigned char*>(label.data()),
+                             static_cast<unsigned long long>(label.size()),
+                             node_private_key.data()) != 0) {
+    throw std::runtime_error("failed to derive Tailcat disco key");
+  }
+  // Upstream stores the raw HMAC output in DiscoPrivate. X25519 performs
+  // scalar clamping when deriving the public key/shared secret.
   out.public_key = node_public_from_private(out.private_key);
   return out;
 }
