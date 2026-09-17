@@ -137,6 +137,7 @@ add_library(tailcat_core STATIC
     src/lwip_stack.cpp
     src/data_plane.cpp
     src/host_tcp.cpp
+    src/port_forward.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
