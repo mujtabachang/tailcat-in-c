@@ -80,14 +80,28 @@ int main() try {
   const auto server_identity = tailcat::generate_node_key();
   const auto client_identity = tailcat::generate_node_key();
   const auto client_disco = tailcat::derive_disco_key(client_identity.private_key);
+  const auto denied_identity = tailcat::generate_node_key();
+  const auto denied_disco = tailcat::derive_disco_key(denied_identity.private_key);
   const auto psk = tailcat::generate_secret_key();
 
   FakeDerp derp;
-  tailcat::TailcatServerDataPlane server(derp, server_identity, psk);
+  tailcat::TailcatServerDataPlane server(
+      derp, server_identity, psk,
+      [allowed = client_identity.public_key](const tailcat::Key32& peer) {
+        return peer == allowed;
+      });
   auto listener = server.listen(1);
   require(listener->port() == 1U, "server listener did not bind TCP port 1");
 
-  std::cerr << "stage: meow\n";
+  std::cerr << "stage: denied meow\n";
+  derp.inject(denied_identity.public_key,
+              tailcat::encode_meow_ping(denied_identity.public_key,
+                                         denied_disco.public_key));
+  require(server.pump_for(1ms), "server did not consume denied MEOW frame");
+  require(server.peer_count() == 0U, "denied MEOW created a server peer");
+  require(derp.sent.empty(), "denied MEOW received an acknowledgement");
+
+  std::cerr << "stage: allowed meow\n";
   derp.inject(client_identity.public_key,
               tailcat::encode_meow_ping(client_identity.public_key,
                                          client_disco.public_key));
