@@ -124,6 +124,7 @@ endif()
 
 add_library(tailcat_core STATIC
     src/cli.cpp
+    src/extra_commands.cpp
     src/forward_command.cpp
     src/ssh_command.cpp
     src/platform.cpp
