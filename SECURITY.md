@@ -2,61 +2,63 @@
 
 ## Reporting a vulnerability
 
-To report a security issue, contact the Tailscale security team as
-described at https://tailscale.com/.well-known/security.txt.
+Security issues in this C++ rewrite should be reported to this repository rather than assumed to be vulnerabilities in Tailscale's upstream Go implementation. Prefer GitHub's private vulnerability reporting / Security Advisory flow for this repository when available; otherwise open the minimum public issue needed to request a private contact path and do not publish exploit details.
 
-## Threat model
+If a report applies to the upstream `tailscale/tailcat` project or Tailscale infrastructure itself, follow upstream's security reporting instructions instead.
 
-Tailscale (the company) treats the security of the Tailscale core very
-seriously, and tailcat is built from those same production components:
-WireGuard, magicsock, DERP, and gVisor's netstack.
+## Native implementation boundary
 
-The tailcat wrapper around them, however, is an early experimental
-tool. It has a lot of powerful features, but it was originally
-designed for use with oneself: the same person running both ends. Its
-threat model hasn't historically included malicious adversaries, such
-as tailcat use between two different parties, one of whom might be
-trying to attack you.
+This repository is an independent C++ implementation of the Tailcat protocol. It does **not** use Tailscale's Go `magicsock`, gVisor netstack, or the upstream Go WireGuard engine.
 
-We recognize that people will inevitably and increasingly use tailcat
-between mutually untrusting parties, and we do want to harden it for
-those use cases over time. Until then, be thoughtful about accepting
-tailcat addresses from, or serving powerful things (shells, writable
-directories, exit nodes) to, people you don't trust. Security reports
-that help us get there are very welcome.
+Important native components include:
 
-## Hall of Thanks
+- libsodium for Curve25519/NaCl primitives
+- a C WireGuard implementation derived from wireguard-lwip
+- lwIP for the userspace TCP/IP stack
+- libcurl/TLS for DERP HTTPS transport
+- nlohmann/json for DERP-map and persisted-key parsing
 
-Thanks to the people who've reported security issues in tailcat:
+Protocol compatibility with upstream does not imply identical implementation security properties. Bugs in the C++ port can exist independently of upstream Tailcat.
 
-* [Will Frame](https://wpf.nz/) reported two rounds of issues with
-  write-only (`:wo`) file shares (drop boxes), as used by
-  `tailcat recv`:
-  * In 0.4.0, senders could write over existing files, and could test
-    whether a guessed filename existed by how opening it behaved.
-    Fixed in
-    [d796f883e](https://github.com/tailscale/tailcat/commit/d796f883e5ec8b17f6c4196276fad65646d101f5).
-  * That fix left narrower ways to test guessed names: exclusive
-    creation failed on a collision, and directories could be stat'd.
-    Fixed by storing each upload under a server-chosen name and
-    making directory support a separate opt-in
-    (`tailcat recv --accept-dirs`).
-* [Matt Andreko](https://www.mattandreko.com/) reported two issues
-  with how untrusted tailcat addresses are handled. Both are mostly
-  attacking-yourself issues today, but they matter for automation, or
-  any time you get a tailcat address from an untrusted party:
-  * Invalid tailcat addresses were passed unvalidated to ssh/scp
-    child processes, fixed in
-    [aba9d9ba2](https://github.com/tailscale/tailcat/commit/aba9d9ba255380ab58b12abf8dbcb17cf1f5a649).
-  * Mistyped tailcat addresses leaked to DNS as hostname lookups,
-    fixed in
-    [5cb1ec356](https://github.com/tailscale/tailcat/commit/5cb1ec3566617f5667764456fd1f2ee7cb46a366).
-* [Dinnerb0ne](https://github.com/Dinnerb0ne) reported a panic
-  reachable via a meow packet with a zero disco key. A crash (denial
-  of service) only, but one an anonymous stranger could trigger via
-  DERP. Fixed in
-  [79da910c4](https://github.com/tailscale/tailcat/commit/79da910c40a65125c318f41f22a8ac7f5c5c5efd).
-* [Heyang Zhou](https://x.com/heyang_zhou) reported that reusing the
-  node key as the disco key exposed the unlisted node public key on
-  direct UDP paths, fixed in
-  [cb1e0d753](https://github.com/tailscale/tailcat/commit/cb1e0d753e9ace2ebc5bff147ccf1eee6ccdd463).
+## Tailcat addresses are credentials
+
+A Tailcat `tc...` address contains connection metadata and can contain a WireGuard preshared key. Treat addresses as secrets unless you deliberately created a configuration without a PSK and understand the consequences.
+
+Do not publish sensitive addresses in logs, screenshots, issue reports, DNS records, shell history, or public chat. A persistent address should be protected like a long-lived credential and rotated if exposed.
+
+## SSH
+
+The current `tailcat ssh` client validates the Tailcat address before constructing an OpenSSH `ProxyCommand`. The ProxyCommand arguments are quoted for the platform and the stream is binary-safe.
+
+The current `tailcat serve ssh` implementation forwards the encrypted Tailcat connection to a local SSH daemon rather than embedding an SSH server. Normal SSH authentication and authorization are therefore still enforced by that daemon. Keep the local daemon configured securely even if it is reachable only through loopback and Tailcat.
+
+Host-key checking is intentionally disabled for the synthetic OpenSSH destination used by the Tailcat ProxyCommand, matching the transport model where the Tailcat address selects the encrypted peer. The Tailcat address itself therefore needs to remain trusted.
+
+## Network exposure
+
+The C++ data path is userspace-only and does not install kernel routes or a TUN interface. Current peer traffic is relayed through DERP while remaining end-to-end WireGuard encrypted.
+
+Serving arbitrary ports, SSH, future file shares, SOCKS proxies, or exit-node functionality can expose powerful local resources to anyone who possesses sufficient Tailcat connection credentials. Apply least privilege to every service behind Tailcat.
+
+## Untrusted input
+
+Treat all of the following as attacker-controlled input:
+
+- Tailcat addresses received from another party
+- DERP frames and rendezvous packets
+- decrypted IP/TCP/UDP traffic from an authenticated peer
+- DERP-map JSON and future DNS TXT aliases
+- SSH/scp paths and arguments
+- persisted key/configuration files that can be modified by another user
+
+Parsing and bounds checks are security boundaries. New protocol features should include malformed-input tests and cross-platform CI coverage before being called complete.
+
+## Dependency and release policy
+
+Native dependencies are pinned in CMake. Dependency updates should be reviewed as security-sensitive changes and run through the complete Linux/macOS/Windows test matrix.
+
+Until full upstream parity and broader interoperability testing are complete, publish development versions as prereleases. A green build is necessary but is not by itself a security audit.
+
+## Upstream security lessons
+
+Upstream Tailcat has previously fixed issues involving unsafe SSH/scp argument handling, DNS leakage of mistyped addresses, unauthenticated malformed rendezvous packets, disco-key privacy, and write-only file-share semantics. Equivalent features in this rewrite must preserve those lessons rather than merely reproduce the happy path.
