@@ -23,8 +23,8 @@ env:
   UPSTREAM_TAILCAT_SHA: 79dc7eff30d78fbe9a2c69c725eb05c82d0d542d
 
 jobs:
-  cpp-runner:
-    name: C++ server / C++ client
+  build-cpp:
+    name: Build native C++ reference
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -33,96 +33,146 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
-      - name: Build native C++ Tailcat
-        run: |
-          cmake --preset linux
-          cmake --build --preset linux
-          ctest --preset linux
-          cp build/linux/tailcat ./cpp-tailcat
-
-      - name: Start C++ server
-        id: cpp_server
+      - name: Build and test native C++ Tailcat
         shell: bash
         run: |
           set -euo pipefail
-          : > cpp-server.log
-          nohup ./cpp-tailcat >cpp-server.log 2>&1 &
-          echo "$!" > cpp-server.pid
+          cmake --preset linux
+          cmake --build --preset linux
+          ctest --preset linux --output-on-failure
+          cp build/linux/tailcat ./cpp-tailcat
+          chmod +x ./cpp-tailcat
+
+      - name: Upload native C++ binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-cpp-tailcat
+          path: cpp-tailcat
+          if-no-files-found: error
+          retention-days: 1
+
+  cpp-server:
+    name: C++↔C++ / server runner
+    needs: build-cpp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download native C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-cpp-tailcat
+          path: .
+
+      - name: Start C++ server and capture address
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          : > cpp-cpp-server.log
+          nohup ./cpp-tailcat >cpp-cpp-server.log 2>&1 &
+          echo "$!" > cpp-cpp-server.pid
           for _ in $(seq 1 120); do
-            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' cpp-server.log | head -n1 || true)
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' cpp-cpp-server.log | head -n1 || true)
             if [[ -n "$addr" ]]; then
-              printf '%s\n' "$addr" > cpp-address.txt
-              echo "C++ server address: $addr"
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > cpp-cpp-address.txt
+              echo "C++ server published a Tailcat address"
               exit 0
             fi
-            if ! kill -0 "$(cat cpp-server.pid)" 2>/dev/null; then
-              cat cpp-server.log
+            if ! kill -0 "$(cat cpp-cpp-server.pid)" 2>/dev/null; then
+              cat cpp-cpp-server.log
               echo "C++ server exited before publishing an address" >&2
               exit 1
             fi
             sleep 1
           done
-          cat cpp-server.log
+          cat cpp-cpp-server.log
           echo "Timed out waiting for C++ server address" >&2
           exit 1
 
       - name: Publish C++ server address
         uses: actions/upload-artifact@v4
         with:
-          name: cpp-server-address
-          path: cpp-address.txt
+          name: cpp-cpp-server-address
+          path: cpp-cpp-address.txt
           if-no-files-found: error
           retention-days: 1
 
-      - name: Wait for Go client and verify C++ server
+      - name: Verify client reached C++ server
         shell: bash
         run: |
           set -euo pipefail
-          pid=$(cat cpp-server.pid)
+          pid=$(cat cpp-cpp-server.pid)
           for _ in $(seq 1 180); do
             if ! kill -0 "$pid" 2>/dev/null; then
               wait "$pid" || {
-                cat cpp-server.log
+                cat cpp-cpp-server.log
                 exit 1
               }
-              grep -F 'go-client-to-cpp-server' cpp-server.log
+              grep -F 'cpp-client-to-cpp-server' cpp-cpp-server.log
+              echo "C++ server received payload from the separate C++ client runner"
               exit 0
             fi
             sleep 1
           done
-          cat cpp-server.log
+          cat cpp-cpp-server.log
           kill "$pid" || true
-          echo "Go client never completed the C++ server session" >&2
+          echo "C++ client never completed the C++ server session" >&2
           exit 1
 
-      - name: Wait for Go server address
+  cpp-client:
+    name: C++↔C++ / client runner
+    needs: build-cpp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download native C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-cpp-tailcat
+          path: .
+
+      - name: Wait for C++ server address
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf go-address-artifact
+          chmod +x ./cpp-tailcat
+          rm -rf cpp-cpp-address-artifact
           for _ in $(seq 1 180); do
-            if gh run download "$GITHUB_RUN_ID" -n go-server-address -D go-address-artifact 2>/dev/null; then
-              test -s go-address-artifact/go-address.txt
-              cat go-address-artifact/go-address.txt
+            if gh run download "$GITHUB_RUN_ID" -n cpp-cpp-server-address -D cpp-cpp-address-artifact 2>/dev/null; then
+              test -s cpp-cpp-address-artifact/cpp-cpp-address.txt
+              addr=$(cat cpp-cpp-address-artifact/cpp-cpp-address.txt)
+              echo "::add-mask::$addr"
+              echo "Received C++ server address from separate runner"
               exit 0
             fi
-            rm -rf go-address-artifact
+            rm -rf cpp-cpp-address-artifact
             sleep 1
           done
-          echo "Timed out waiting for Go server address artifact" >&2
+          echo "Timed out waiting for C++ server address artifact" >&2
           exit 1
 
-      - name: Connect C++ client to Go server
+      - name: Connect C++ client to C++ server
         shell: bash
         run: |
           set -euo pipefail
-          addr=$(cat go-address-artifact/go-address.txt)
-          printf 'cpp-client-to-go-server\n' | ./cpp-tailcat "$addr"
+          addr=$(cat cpp-cpp-address-artifact/cpp-cpp-address.txt)
+          echo "::add-mask::$addr"
+          printf 'cpp-client-to-cpp-server\n' | timeout 120s ./cpp-tailcat "$addr"
 
-  go-runner:
-    name: Go client / Go server
+  cpp-cpp-gate:
+    name: C++↔C++ two-runner gate
+    needs: [cpp-server, cpp-client]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm native two-runner connection
+        run: echo "Native C++ Tailcat connected successfully between two independent GitHub runners."
+
+  build-go:
+    name: Build pinned upstream Go reference
+    needs: cpp-cpp-gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,7 +195,96 @@ jobs:
           set -euo pipefail
           cd upstream-go
           go build -o "$GITHUB_WORKSPACE/go-tailcat" ./cmd/tailcat
-          "$GITHUB_WORKSPACE/go-tailcat" --version || true
+          chmod +x "$GITHUB_WORKSPACE/go-tailcat"
+
+      - name: Upload upstream Go binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-go-tailcat
+          path: go-tailcat
+          if-no-files-found: error
+          retention-days: 1
+
+  cpp-server-for-go:
+    name: Go↔C++ / C++ server runner
+    needs: [cpp-cpp-gate, build-cpp, build-go]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download native C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-cpp-tailcat
+          path: .
+
+      - name: Start C++ server and capture address
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          : > cpp-go-server.log
+          nohup ./cpp-tailcat >cpp-go-server.log 2>&1 &
+          echo "$!" > cpp-go-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' cpp-go-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > cpp-go-address.txt
+              echo "C++ server published a Tailcat address for Go client"
+              exit 0
+            fi
+            if ! kill -0 "$(cat cpp-go-server.pid)" 2>/dev/null; then
+              cat cpp-go-server.log
+              echo "C++ server exited before publishing an address" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat cpp-go-server.log
+          echo "Timed out waiting for C++ server address" >&2
+          exit 1
+
+      - name: Publish C++ server address
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-go-server-address
+          path: cpp-go-address.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Verify Go client reached C++ server
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat cpp-go-server.pid)
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || {
+                cat cpp-go-server.log
+                exit 1
+              }
+              grep -F 'go-client-to-cpp-server' cpp-go-server.log
+              echo "C++ server received payload from upstream Go client"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat cpp-go-server.log
+          kill "$pid" || true
+          echo "Go client never completed the C++ server session" >&2
+          exit 1
+
+  go-client-for-cpp:
+    name: Go↔C++ / Go client runner
+    needs: [cpp-cpp-gate, build-go]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download upstream Go binary
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-go-tailcat
+          path: .
 
       - name: Wait for C++ server address
         env:
@@ -153,14 +292,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf cpp-address-artifact
+          chmod +x ./go-tailcat
+          rm -rf cpp-go-address-artifact
           for _ in $(seq 1 180); do
-            if gh run download "$GITHUB_RUN_ID" -n cpp-server-address -D cpp-address-artifact 2>/dev/null; then
-              test -s cpp-address-artifact/cpp-address.txt
-              cat cpp-address-artifact/cpp-address.txt
+            if gh run download "$GITHUB_RUN_ID" -n cpp-go-server-address -D cpp-go-address-artifact 2>/dev/null; then
+              test -s cpp-go-address-artifact/cpp-go-address.txt
+              addr=$(cat cpp-go-address-artifact/cpp-go-address.txt)
+              echo "::add-mask::$addr"
+              echo "Received C++ server address for Go client"
               exit 0
             fi
-            rm -rf cpp-address-artifact
+            rm -rf cpp-go-address-artifact
             sleep 1
           done
           echo "Timed out waiting for C++ server address artifact" >&2
@@ -170,59 +312,125 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          addr=$(cat cpp-address-artifact/cpp-address.txt)
-          printf 'go-client-to-cpp-server\n' | ./go-tailcat "$addr"
+          addr=$(cat cpp-go-address-artifact/cpp-go-address.txt)
+          echo "::add-mask::$addr"
+          printf 'go-client-to-cpp-server\n' | timeout 120s ./go-tailcat "$addr"
 
-      - name: Start Go server
+  go-server-for-cpp:
+    name: Go↔C++ / Go server runner
+    needs: [cpp-cpp-gate, build-go]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download upstream Go binary
+        uses: actions/download-artifact@v4
+        with:
+          name: upstream-go-tailcat
+          path: .
+
+      - name: Start Go server and capture address
         shell: bash
         run: |
           set -euo pipefail
-          : > go-server.log
-          nohup ./go-tailcat >go-server.log 2>&1 &
-          echo "$!" > go-server.pid
+          chmod +x ./go-tailcat
+          : > go-cpp-server.log
+          nohup ./go-tailcat >go-cpp-server.log 2>&1 &
+          echo "$!" > go-cpp-server.pid
           for _ in $(seq 1 120); do
-            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' go-server.log | head -n1 || true)
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' go-cpp-server.log | head -n1 || true)
             if [[ -n "$addr" ]]; then
-              printf '%s\n' "$addr" > go-address.txt
-              echo "Go server address: $addr"
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > go-cpp-address.txt
+              echo "Go server published a Tailcat address for C++ client"
               exit 0
             fi
-            if ! kill -0 "$(cat go-server.pid)" 2>/dev/null; then
-              cat go-server.log
+            if ! kill -0 "$(cat go-cpp-server.pid)" 2>/dev/null; then
+              cat go-cpp-server.log
               echo "Go server exited before publishing an address" >&2
               exit 1
             fi
             sleep 1
           done
-          cat go-server.log
+          cat go-cpp-server.log
           echo "Timed out waiting for Go server address" >&2
           exit 1
 
       - name: Publish Go server address
         uses: actions/upload-artifact@v4
         with:
-          name: go-server-address
-          path: go-address.txt
+          name: go-cpp-server-address
+          path: go-cpp-address.txt
           if-no-files-found: error
           retention-days: 1
 
-      - name: Wait for C++ client and verify Go server
+      - name: Verify C++ client reached Go server
         shell: bash
         run: |
           set -euo pipefail
-          pid=$(cat go-server.pid)
+          pid=$(cat go-cpp-server.pid)
           for _ in $(seq 1 180); do
             if ! kill -0 "$pid" 2>/dev/null; then
               wait "$pid" || {
-                cat go-server.log
+                cat go-cpp-server.log
                 exit 1
               }
-              grep -F 'cpp-client-to-go-server' go-server.log
+              grep -F 'cpp-client-to-go-server' go-cpp-server.log
+              echo "Go server received payload from native C++ client"
               exit 0
             fi
             sleep 1
           done
-          cat go-server.log
+          cat go-cpp-server.log
           kill "$pid" || true
           echo "C++ client never completed the Go server session" >&2
           exit 1
+
+  cpp-client-for-go:
+    name: Go↔C++ / C++ client runner
+    needs: [cpp-cpp-gate, build-cpp, build-go]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download native C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-cpp-tailcat
+          path: .
+
+      - name: Wait for Go server address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          rm -rf go-cpp-address-artifact
+          for _ in $(seq 1 180); do
+            if gh run download "$GITHUB_RUN_ID" -n go-cpp-server-address -D go-cpp-address-artifact 2>/dev/null; then
+              test -s go-cpp-address-artifact/go-cpp-address.txt
+              addr=$(cat go-cpp-address-artifact/go-cpp-address.txt)
+              echo "::add-mask::$addr"
+              echo "Received Go server address for C++ client"
+              exit 0
+            fi
+            rm -rf go-cpp-address-artifact
+            sleep 1
+          done
+          echo "Timed out waiting for Go server address artifact" >&2
+          exit 1
+
+      - name: Connect C++ client to Go server
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat go-cpp-address-artifact/go-cpp-address.txt)
+          echo "::add-mask::$addr"
+          printf 'cpp-client-to-go-server\n' | timeout 120s ./cpp-tailcat "$addr"
+
+  go-cpp-gate:
+    name: Go↔C++ bidirectional interop gate
+    needs: [cpp-server-for-go, go-client-for-cpp, go-server-for-cpp, cpp-client-for-go]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm bidirectional upstream interoperability
+        run: echo "Pinned upstream Go Tailcat and native C++ Tailcat connected successfully in both directions."
