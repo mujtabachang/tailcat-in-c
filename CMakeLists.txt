@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
-project(tailcat VERSION 0.1.0 LANGUAGES CXX)
+
+set(TAILCAT_VERSION "0.1.0" CACHE STRING "Tailcat version")
+project(tailcat VERSION ${TAILCAT_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +15,7 @@ add_library(tailcat_core
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
+target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${PROJECT_VERSION}")
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
