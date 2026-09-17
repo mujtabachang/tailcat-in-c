@@ -8,5 +8,6 @@
 namespace tailcat {
 
 int run_forward_command(const std::vector<std::string>& args, bool verbose);
+int run_browse_command(const std::vector<std::string>& args, bool verbose);
 
 }  // namespace tailcat
