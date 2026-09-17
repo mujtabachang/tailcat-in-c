@@ -9,15 +9,21 @@
 #include "tailcat/wireguard_engine.hpp"
 
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <iostream>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 namespace {
+
+void require(bool condition, const std::string& message) {
+  if (!condition) throw std::runtime_error(message);
+}
 
 class FakeDerp final : public tailcat::DerpTransport {
  public:
@@ -68,7 +74,7 @@ std::vector<std::uint8_t> ipv6_packet(const tailcat::Ip6Address& source,
 
 }  // namespace
 
-int main() {
+int main() try {
   using namespace std::chrono_literals;
   tailcat::initialize_crypto();
   const auto server_identity = tailcat::generate_node_key();
@@ -79,37 +85,48 @@ int main() {
   FakeDerp derp;
   tailcat::TailcatServerDataPlane server(derp, server_identity, psk);
   auto listener = server.listen(1);
-  assert(listener->port() == 1U);
+  require(listener->port() == 1U, "server listener did not bind TCP port 1");
 
+  std::cerr << "stage: meow\n";
   derp.inject(client_identity.public_key,
               tailcat::encode_meow_ping(client_identity.public_key,
                                          client_disco.public_key));
-  assert(server.pump_for(1ms));
-  assert(server.peer_count() == 1U);
-  assert(server.has_peer(client_identity.public_key));
-  assert(derp.sent.size() == 1U);
-  assert(derp.sent.back().first == client_identity.public_key);
-  assert(tailcat::is_meowed_packet(derp.sent.back().second));
+  require(server.pump_for(1ms), "server did not consume MEOW frame");
+  require(server.peer_count() == 1U, "MEOW did not create server peer");
+  require(server.has_peer(client_identity.public_key), "server peer key mismatch");
+  require(derp.sent.size() == 1U, "server did not send one MEOWED packet");
+  require(derp.sent.back().first == client_identity.public_key,
+          "MEOWED destination mismatch");
+  require(tailcat::is_meowed_packet(derp.sent.back().second),
+          "server response was not MEOWED");
 
+  std::cerr << "stage: wireguard handshake\n";
   tailcat::WireGuardPeerEngine client_wireguard(
       client_identity, server_identity.public_key, psk);
   derp.sent.clear();
   derp.inject(client_identity.public_key,
               client_wireguard.create_handshake_initiation());
-  assert(server.pump_for(1ms));
-  assert(derp.sent.size() == 1U);
+  require(server.pump_for(1ms), "server did not consume WireGuard initiation");
+  require(derp.sent.size() == 1U, "server did not send WireGuard response");
   const auto response = client_wireguard.handle_packet(derp.sent.back().second);
-  assert(response.session_established);
-  assert(client_wireguard.session_established());
-  assert(server.peer_session_established(client_identity.public_key));
+  require(response.session_established, "client rejected WireGuard response");
+  require(client_wireguard.session_established(), "client WireGuard session not established");
+  require(server.peer_session_established(client_identity.public_key),
+          "server WireGuard session not established");
 
+  std::cerr << "stage: transport into lwip\n";
   const auto plaintext = ipv6_packet(
       tailcat::tailcat_ip_for_node(client_identity.public_key),
       tailcat::tailcat_ip_for_node(server_identity.public_key));
   derp.inject(client_identity.public_key,
               client_wireguard.encrypt_ip_packet(plaintext));
-  assert(server.pump_for(1ms));
+  require(server.pump_for(1ms), "server did not consume WireGuard transport packet");
 
+  std::cerr << "stage: teardown\n";
   listener->close();
+  std::cerr << "stage: done\n";
   return 0;
+} catch (const std::exception& e) {
+  std::cerr << "tailcat_data_plane_test: " << e.what() << '\n';
+  return 1;
 }
