@@ -13,6 +13,10 @@ namespace tailcat {
 // and returns its exit code.
 int run_ssh_command(const std::vector<std::string>& args, bool verbose);
 
+// Runs the system scp client with Tailcat itself as ProxyCommand. Exactly one
+// remote operand must name a tc... address.
+int run_scp_command(const std::vector<std::string>& args, bool verbose);
+
 // Exposed for hermetic tests and for scp/cp command construction.
 std::string ssh_proxy_command(std::string_view executable,
                               std::string_view address,
