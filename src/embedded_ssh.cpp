@@ -517,13 +517,43 @@ struct SessionContext {
   ssh_channel_callbacks_struct channel_callbacks{};
   std::unique_ptr<ChildProcess> process;
   std::vector<std::pair<std::string, std::string>> environment;
+  const std::vector<std::string>* authorized_key_blobs = nullptr;
+  bool allow_none = false;
   bool pty_requested = false;
   int pty_width = 80;
   int pty_height = 24;
   std::string error;
 };
 
-int auth_none(ssh_session, const char*, void*) { return SSH_AUTH_SUCCESS; }
+int auth_none(ssh_session, const char*, void* userdata) {
+  const auto* context = static_cast<const SessionContext*>(userdata);
+  return context != nullptr && context->allow_none ? SSH_AUTH_SUCCESS
+                                                    : SSH_AUTH_DENIED;
+}
+
+int auth_pubkey(ssh_session, const char*, ssh_key key, char signature_state,
+                void* userdata) {
+  const auto* context = static_cast<const SessionContext*>(userdata);
+  if (context == nullptr || context->authorized_key_blobs == nullptr || key == nullptr) {
+    return SSH_AUTH_DENIED;
+  }
+  if (signature_state != SSH_PUBLICKEY_STATE_NONE &&
+      signature_state != SSH_PUBLICKEY_STATE_VALID) {
+    return SSH_AUTH_DENIED;
+  }
+  char* encoded = nullptr;
+  if (ssh_pki_export_pubkey_base64(key, &encoded) != SSH_OK || encoded == nullptr) {
+    if (encoded != nullptr) ssh_string_free_char(encoded);
+    return SSH_AUTH_DENIED;
+  }
+  const std::string blob(encoded);
+  ssh_string_free_char(encoded);
+  return std::find(context->authorized_key_blobs->begin(),
+                   context->authorized_key_blobs->end(), blob) !=
+                 context->authorized_key_blobs->end()
+             ? SSH_AUTH_SUCCESS
+             : SSH_AUTH_DENIED;
+}
 
 int channel_data(ssh_session, ssh_channel, void* data, uint32_t len, int is_stderr,
                  void* userdata) {
@@ -629,12 +659,15 @@ struct WorkerState {
 };
 
 void run_ssh_session(NativeSocket fd, const std::string& host_key,
+                     EmbeddedSshOptions options,
                      const std::shared_ptr<WorkerState>& state) noexcept {
   bool fd_owned_by_libssh = false;
   ssh_bind binding = nullptr;
   ssh_session session = nullptr;
   ssh_event event = nullptr;
   SessionContext context;
+  context.authorized_key_blobs = &options.authorized_key_blobs;
+  context.allow_none = options.allow_none;
   try {
     binding = ssh_bind_new();
     session = ssh_new();
@@ -661,12 +694,14 @@ void run_ssh_session(NativeSocket fd, const std::string& host_key,
     ssh_server_callbacks_struct callbacks{};
     callbacks.userdata = &context;
     callbacks.auth_none_function = auth_none;
+    callbacks.auth_pubkey_function = auth_pubkey;
     callbacks.channel_open_request_session_function = channel_open;
     ssh_callbacks_init(&callbacks);
     if (ssh_set_server_callbacks(session, &callbacks) != SSH_OK) {
       throw std::runtime_error("failed to install embedded SSH server callbacks");
     }
-    ssh_set_auth_methods(session, SSH_AUTH_METHOD_NONE);
+    ssh_set_auth_methods(session, options.allow_none ? SSH_AUTH_METHOD_NONE
+                                                     : SSH_AUTH_METHOD_PUBLICKEY);
     long timeout_seconds = 10;
     (void)ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout_seconds);
 
@@ -687,8 +722,6 @@ void run_ssh_session(NativeSocket fd, const std::string& host_key,
       if (context.process && context.channel != nullptr) {
         context.process->pump_output(context.channel);
         if (const auto code = context.process->poll_exit()) {
-          // Drain any bytes written just before process exit before closing the
-          // SSH channel, matching upstream's output-before-Wait ordering.
           for (int i = 0; i < 5; ++i) {
             context.process->pump_output(context.channel);
             std::this_thread::sleep_for(2ms);
@@ -715,7 +748,7 @@ void run_ssh_session(NativeSocket fd, const std::string& host_key,
   if (event != nullptr) ssh_event_free(event);
   if (session != nullptr) {
     ssh_disconnect(session);
-    ssh_free(session);  // closes fd after ssh_bind_accept_fd succeeded
+    ssh_free(session);
   }
   if (binding != nullptr) ssh_bind_free(binding);
   if (!fd_owned_by_libssh) close_native_socket(fd);
@@ -744,12 +777,17 @@ struct EmbeddedSshServer::Impl {
   TailcatServerDataPlane& data;
   std::shared_ptr<LwipTcpListener> listener;
   std::string host_key;
-  bool verbose = false;
+  EmbeddedSshOptions options;
   std::vector<Connection> connections;
 
-  Impl(TailcatServerDataPlane& data_plane, bool log_verbose)
+  Impl(TailcatServerDataPlane& data_plane, EmbeddedSshOptions server_options)
       : data(data_plane), listener(data.listen(22U)),
-        host_key(ensure_ssh_host_key()), verbose(log_verbose) {}
+        host_key(ensure_ssh_host_key()), options(std::move(server_options)) {
+    if (!options.allow_none && options.authorized_key_blobs.empty()) {
+      throw std::invalid_argument(
+          "embedded SSH requires authorized keys unless no-auth-ssh is selected");
+    }
+  }
 
   ~Impl() {
     listener->close();
@@ -767,8 +805,11 @@ struct EmbeddedSshServer::Impl {
         auto pair = make_socket_pair();
         auto worker = std::make_shared<WorkerState>();
         const auto key = host_key;
+        const auto session_options = options;
         NativeSocket ssh_fd = pair.ssh.release();
-        std::thread thread([ssh_fd, key, worker] { run_ssh_session(ssh_fd, key, worker); });
+        std::thread thread([ssh_fd, key, session_options, worker] {
+          run_ssh_session(ssh_fd, key, session_options, worker);
+        });
         connections.push_back(Connection{std::move(tunnel), std::move(pair.bridge),
                                          std::move(worker), std::move(thread)});
       } catch (...) {
@@ -829,7 +870,7 @@ struct EmbeddedSshServer::Impl {
           std::lock_guard<std::mutex> lock(connection.worker->mutex);
           worker_error = connection.worker->error;
         }
-        if (verbose && !worker_error.empty() && !connection.error_reported) {
+        if (options.verbose && !worker_error.empty() && !connection.error_reported) {
           std::cerr << "# embedded SSH session: " << worker_error << '\n';
           connection.error_reported = true;
         }
@@ -841,7 +882,7 @@ struct EmbeddedSshServer::Impl {
         }
       }
     } catch (const std::exception& e) {
-      if (verbose) std::cerr << "# embedded SSH bridge: " << e.what() << '\n';
+      if (options.verbose) std::cerr << "# embedded SSH bridge: " << e.what() << '\n';
       connection.bridge.close();
       connection.tunnel->close();
       if (connection.worker->done.load(std::memory_order_acquire) && connection.thread.joinable()) {
@@ -861,8 +902,9 @@ struct EmbeddedSshServer::Impl {
   }
 };
 
-EmbeddedSshServer::EmbeddedSshServer(TailcatServerDataPlane& data_plane, bool verbose)
-    : impl_(std::make_unique<Impl>(data_plane, verbose)) {}
+EmbeddedSshServer::EmbeddedSshServer(TailcatServerDataPlane& data_plane,
+                                     EmbeddedSshOptions options)
+    : impl_(std::make_unique<Impl>(data_plane, std::move(options))) {}
 EmbeddedSshServer::~EmbeddedSshServer() = default;
 void EmbeddedSshServer::poll() { impl_->poll(); }
 
