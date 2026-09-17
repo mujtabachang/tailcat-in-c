@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+    branches: [main, cpp-rewrite]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triplet: x64-linux
+          - os: macos-latest
+            triplet: arm64-osx
+          - os: windows-latest
+            triplet: x64-windows
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lukka/run-vcpkg@v11
+      - name: Configure
+        shell: bash
+        run: cmake --preset ninja-multi-vcpkg -DTAILCAT_BUILD_TESTS=ON
+      - name: Build
+        shell: bash
+        run: cmake --build --preset ninja-multi-vcpkg --config Release
+      - name: Test
+        shell: bash
+        run: ctest --test-dir build -C Release --output-on-failure

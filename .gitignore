@@ -1,13 +1,8 @@
-# Built binaries.
-/tailcat
-/cmd/tailcat/tailcat
-
-# GoReleaser output.
-/dist
-
-# Nix build output.
-/result
-
-# Go test artifacts.
-*.test
-*.out
+/build/
+/out/
+.vscode/
+.idea/
+*.user
+*.suo
+*.VC.db
+.DS_Store
