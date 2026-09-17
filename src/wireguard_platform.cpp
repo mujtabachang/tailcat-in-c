@@ -14,7 +14,13 @@ extern "C" uint32_t wireguard_sys_now() {
   using Clock = std::chrono::steady_clock;
   static const auto started = Clock::now();
   const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
-  return static_cast<uint32_t>(static_cast<uint64_t>(millis) & 0xffffffffULL);
+  // wireguard-lwip uses zero in last_tx/last_rx as a sentinel for "never".
+  // Returning a one-based monotonic tick avoids a freshly received packet in
+  // the first millisecond being mistaken for an unused responder keypair.
+  const auto one_based = static_cast<uint64_t>(millis >= 0 ? millis : 0) + 1ULL;
+  auto value = static_cast<uint32_t>(one_based & 0xffffffffULL);
+  if (value == 0U) value = 1U;
+  return value;
 }
 
 extern "C" void wireguard_random_bytes(void *bytes, size_t size) {
