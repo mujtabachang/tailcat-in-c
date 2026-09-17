@@ -9,10 +9,14 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#ifndef TAILCAT_VERSION
+#define TAILCAT_VERSION "0.1.0"
+#endif
+
 namespace tailcat {
 namespace {
 
-constexpr std::string_view kVersion = "0.1.0-cpp";
+constexpr std::string_view kVersion = TAILCAT_VERSION;
 
 bool is_help(std::string_view arg) { return arg == "-h" || arg == "--help"; }
 bool is_version(std::string_view arg) { return arg == "-V" || arg == "--version" || arg == "version"; }

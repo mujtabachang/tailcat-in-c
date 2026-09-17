@@ -1,69 +1,40 @@
-# Releasing tailcat
+# Releasing Tailcat in C++
 
-Releases are cut by pushing a version tag. GitHub Actions
-(`.github/workflows/release.yml`) then runs
-[GoReleaser](https://goreleaser.com/) with the config in
-`.goreleaser.yaml`, which builds the artifacts and creates a draft
-GitHub Release with a changelog generated from the commit log. The
-draft is invisible to watchers until published.
+Releases are created by the GitHub Actions workflow in `.github/workflows/release.yml`.
+The workflow is intentionally manual and only permits releases from the `main` branch.
 
-## Cutting a release
+## Create a release
 
-1. Make sure the Test workflow is green on `main`.
-2. Run the release script, which creates an SSH-signed annotated tag
-   after checking that the tag doesn't already exist on origin (a tag
-   that exists only locally is replaced). It requires git's
-   `user.signingkey` to be set to your SSH public key.
+1. Merge all intended changes into `main` and make sure the normal `build` workflow is green.
+2. Open **Actions → release → Run workflow** in GitHub.
+3. Select the `main` branch.
+4. Enter a semantic version without the `v` prefix, such as `0.1.0` or `0.2.0-rc.1`.
+5. Optionally enable **prerelease** for alpha, beta, or release-candidate builds.
+6. Run the workflow.
 
-   ```sh
-   ./tag.sh v0.1.0
-   ```
+The workflow validates that it is running from `main`, validates the version, rejects an existing tag, builds and tests on Linux, macOS, and Windows, and verifies that `tailcat --version` reports the requested version.
 
-3. Push the tag as the script instructs:
+If every platform succeeds, the publish job creates the `v<version>` tag at the exact `main` commit used by the workflow and publishes a GitHub Release with generated release notes.
 
-   ```sh
-   git push origin v0.1.0
-   ```
-
-4. Watch the Release workflow in the Actions tab. When it finishes,
-   a draft release with all artifacts appears on the
-   [Releases page](https://github.com/tailscale/tailcat/releases).
-
-5. Edit the draft: replace or top it with hand-written release notes,
-   then publish. Publishing is the step that notifies watchers, so
-   the notification carries the curated notes.
-
-## Artifacts
+## Release artifacts
 
 Each release contains:
 
-* Linux static binaries (tar.gz) for amd64, arm64, and armv7
-* Debian (.deb) and RPM (.rpm) packages for the same architectures
-* Windows binaries (zip) for amd64 and arm64
-* `checksums.txt` with SHA-256 checksums of the above
+- `tailcat-<version>-linux-x86_64.tar.gz`
+- `tailcat-<version>-macos-arm64.tar.gz`
+- `tailcat-<version>-windows-x86_64.zip`
+- `SHA256SUMS`
 
-Each release also pushes container images (amd64 and arm64) to
-[ghcr.io/tailscale/tailcat](https://github.com/tailscale/tailcat/pkgs/container/tailcat), tagged
-both `vX.Y.Z` and `latest`. The image is the static binary in a
-[distroless](https://github.com/GoogleContainerTools/distroless) base
-image; see `Dockerfile.goreleaser`.
+The version passed by the release workflow is forwarded to CMake as `TAILCAT_VERSION`, so the binary version and GitHub tag stay in sync.
 
-The binary version is embedded at build time via `-ldflags -X
-main.version=...`; `tailcat version` prints it. Builds made with
-`go install github.com/tailscale/tailcat/cmd/tailcat@vX.Y.Z` instead
-report the module version from the Go build info.
+## Local versioned build
 
-## Testing locally
-
-To build everything without tagging or publishing, install
-[GoReleaser](https://goreleaser.com/install/) and run:
+A version can also be injected into a local build:
 
 ```sh
-goreleaser release --snapshot --clean
+cmake --preset linux -DTAILCAT_VERSION=0.1.0
+cmake --build --preset linux
+./build/linux/tailcat --version
 ```
 
-The artifacts land in `dist/` (which is gitignored). In snapshot mode
-the container images are built into the local Docker daemon as
-separate per-platform tags rather than a multi-arch manifest, and
-nothing is pushed. Building them requires a buildx builder with the
-docker-container driver (`docker buildx create --use`).
+Use the matching `macos` or `windows` preset on those platforms.
