@@ -41,11 +41,18 @@
 #include <sys/stat.h>
 #else
 #include <fcntl.h>
+#if defined(__APPLE__)
+#include <util.h>
+#else
+#include <pty.h>
+#endif
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -281,7 +288,8 @@ class ChildProcess {
   ChildProcess& operator=(const ChildProcess&) = delete;
 
   void start(const std::string& command,
-             const std::vector<std::pair<std::string, std::string>>& environment) {
+             const std::vector<std::pair<std::string, std::string>>& environment,
+             bool use_pty, int width, int height) {
     if (started_) throw std::runtime_error("SSH session process already started");
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{};
@@ -330,43 +338,88 @@ class ChildProcess {
     process_ = pi.hProcess;
     CloseHandle(pi.hThread);
     (void)environment;
+    (void)use_pty;
+    (void)width;
+    (void)height;
 #else
-    int in_pipe[2] = {-1, -1};
-    int out_pipe[2] = {-1, -1};
-    int err_pipe[2] = {-1, -1};
-    if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
-      throw std::runtime_error(std::string("pipe: ") + std::strerror(errno));
-    }
-    pid_ = fork();
-    if (pid_ < 0) throw std::runtime_error(std::string("fork: ") + std::strerror(errno));
-    if (pid_ == 0) {
-      dup2(in_pipe[0], STDIN_FILENO);
-      dup2(out_pipe[1], STDOUT_FILENO);
-      dup2(err_pipe[1], STDERR_FILENO);
-      close(in_pipe[0]); close(in_pipe[1]);
-      close(out_pipe[0]); close(out_pipe[1]);
-      close(err_pipe[0]); close(err_pipe[1]);
-      for (const auto& [key, value] : environment) setenv(key.c_str(), value.c_str(), 1);
-      const auto home = env_value("HOME");
-      if (!home.empty()) (void)chdir(home.c_str());
-      const auto configured_shell = env_value("SHELL");
-      const std::string shell = configured_shell.empty() ? "/bin/sh" : configured_shell;
-      if (command.empty()) {
-        execl(shell.c_str(), shell.c_str(), "-l", static_cast<char*>(nullptr));
-      } else {
-        execl(shell.c_str(), shell.c_str(), "-c", command.c_str(), static_cast<char*>(nullptr));
+    if (use_pty) {
+      int master = -1;
+      int slave = -1;
+      winsize window{};
+      window.ws_col = static_cast<unsigned short>(std::max(width, 1));
+      window.ws_row = static_cast<unsigned short>(std::max(height, 1));
+      if (openpty(&master, &slave, nullptr, nullptr, &window) != 0) {
+        throw std::runtime_error(std::string("openpty: ") + std::strerror(errno));
       }
-      _exit(127);
+      pid_ = fork();
+      if (pid_ < 0) {
+        close(master);
+        close(slave);
+        throw std::runtime_error(std::string("fork: ") + std::strerror(errno));
+      }
+      if (pid_ == 0) {
+        close(master);
+        if (setsid() < 0) _exit(127);
+        if (ioctl(slave, TIOCSCTTY, 0) < 0) _exit(127);
+        if (dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0 ||
+            dup2(slave, STDERR_FILENO) < 0) {
+          _exit(127);
+        }
+        if (slave > STDERR_FILENO) close(slave);
+        for (const auto& [key, value] : environment) setenv(key.c_str(), value.c_str(), 1);
+        const auto home = env_value("HOME");
+        if (!home.empty()) (void)chdir(home.c_str());
+        const auto configured_shell = env_value("SHELL");
+        const std::string shell = configured_shell.empty() ? "/bin/sh" : configured_shell;
+        if (command.empty()) {
+          execl(shell.c_str(), shell.c_str(), "-l", static_cast<char*>(nullptr));
+        } else {
+          execl(shell.c_str(), shell.c_str(), "-c", command.c_str(), static_cast<char*>(nullptr));
+        }
+        _exit(127);
+      }
+      close(slave);
+      pty_master_fd_ = master;
+      pty_mode_ = true;
+      make_fd_nonblocking(pty_master_fd_);
+    } else {
+      int in_pipe[2] = {-1, -1};
+      int out_pipe[2] = {-1, -1};
+      int err_pipe[2] = {-1, -1};
+      if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        throw std::runtime_error(std::string("pipe: ") + std::strerror(errno));
+      }
+      pid_ = fork();
+      if (pid_ < 0) throw std::runtime_error(std::string("fork: ") + std::strerror(errno));
+      if (pid_ == 0) {
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(out_pipe[1], STDOUT_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        for (const auto& [key, value] : environment) setenv(key.c_str(), value.c_str(), 1);
+        const auto home = env_value("HOME");
+        if (!home.empty()) (void)chdir(home.c_str());
+        const auto configured_shell = env_value("SHELL");
+        const std::string shell = configured_shell.empty() ? "/bin/sh" : configured_shell;
+        if (command.empty()) {
+          execl(shell.c_str(), shell.c_str(), "-l", static_cast<char*>(nullptr));
+        } else {
+          execl(shell.c_str(), shell.c_str(), "-c", command.c_str(), static_cast<char*>(nullptr));
+        }
+        _exit(127);
+      }
+      close(in_pipe[0]);
+      close(out_pipe[1]);
+      close(err_pipe[1]);
+      stdin_fd_ = in_pipe[1];
+      stdout_fd_ = out_pipe[0];
+      stderr_fd_ = err_pipe[0];
+      make_fd_nonblocking(stdin_fd_);
+      make_fd_nonblocking(stdout_fd_);
+      make_fd_nonblocking(stderr_fd_);
     }
-    close(in_pipe[0]);
-    close(out_pipe[1]);
-    close(err_pipe[1]);
-    stdin_fd_ = in_pipe[1];
-    stdout_fd_ = out_pipe[0];
-    stderr_fd_ = err_pipe[0];
-    make_fd_nonblocking(stdin_fd_);
-    make_fd_nonblocking(stdout_fd_);
-    make_fd_nonblocking(stderr_fd_);
 #endif
     started_ = true;
   }
@@ -383,10 +436,12 @@ class ChildProcess {
     }
     return static_cast<std::size_t>(written);
 #else
-    const auto n = write(stdin_fd_, data.data(), data.size());
+    const int fd = pty_mode_ ? pty_master_fd_ : stdin_fd_;
+    if (fd < 0) return 0U;
+    const auto n = write(fd, data.data(), data.size());
     if (n > 0) return static_cast<std::size_t>(n);
     if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0U;
-    close_stdin();
+    if (!pty_mode_) close_stdin();
     return 0U;
 #endif
   }
@@ -397,14 +452,37 @@ class ChildProcess {
     if (stdin_write_ != nullptr) CloseHandle(stdin_write_);
     stdin_write_ = nullptr;
 #else
-    if (stdin_fd_ >= 0) close(stdin_fd_);
+    // A PTY has one bidirectional master descriptor and cannot be half-closed
+    // without also discarding the child's remaining output. Match upstream's
+    // io.Copy behavior: stop writing after SSH EOF, but keep the PTY open until
+    // the child exits.
+    if (!pty_mode_ && stdin_fd_ >= 0) close(stdin_fd_);
     stdin_fd_ = -1;
 #endif
     stdin_closed_ = true;
   }
 
+  void resize(int width, int height) noexcept {
+#ifndef _WIN32
+    if (!pty_mode_ || pty_master_fd_ < 0) return;
+    winsize window{};
+    window.ws_col = static_cast<unsigned short>(std::max(width, 1));
+    window.ws_row = static_cast<unsigned short>(std::max(height, 1));
+    (void)ioctl(pty_master_fd_, TIOCSWINSZ, &window);
+#else
+    (void)width;
+    (void)height;
+#endif
+  }
+
   void pump_output(ssh_channel channel) {
     if (!started_ || channel == nullptr) return;
+#ifndef _WIN32
+    if (pty_mode_) {
+      drain_pty(channel);
+      return;
+    }
+#endif
     drain_one(channel, false);
     drain_one(channel, true);
   }
@@ -438,6 +516,24 @@ class ChildProcess {
   static void make_fd_nonblocking(int fd) {
     const int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+
+  void drain_pty(ssh_channel channel) {
+    std::array<std::uint8_t, 16U * 1024U> buffer{};
+    for (;;) {
+      if (pty_master_fd_ < 0) return;
+      const auto read_count = read(pty_master_fd_, buffer.data(), buffer.size());
+      if (read_count > 0) {
+        if (ssh_channel_write(channel, buffer.data(),
+                              static_cast<uint32_t>(read_count)) == SSH_ERROR) {
+          return;
+        }
+        continue;
+      }
+      if (read_count == 0) return;
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR || errno == EIO) return;
+      return;
+    }
   }
 #endif
 
@@ -484,9 +580,10 @@ class ChildProcess {
       int status = 0;
       (void)waitpid(pid_, &status, 0);
     }
+    if (pty_master_fd_ >= 0) close(pty_master_fd_);
     if (stdout_fd_ >= 0) close(stdout_fd_);
     if (stderr_fd_ >= 0) close(stderr_fd_);
-    stdout_fd_ = stderr_fd_ = -1;
+    pty_master_fd_ = stdout_fd_ = stderr_fd_ = -1;
 #endif
   }
 
@@ -506,6 +603,8 @@ class ChildProcess {
   int stdin_fd_ = -1;
   int stdout_fd_ = -1;
   int stderr_fd_ = -1;
+  int pty_master_fd_ = -1;
+  bool pty_mode_ = false;
 #endif
   bool started_ = false;
   bool stdin_closed_ = false;
@@ -587,14 +686,11 @@ int channel_env(ssh_session, ssh_channel, const char* name, const char* value,
 int channel_pty(ssh_session, ssh_channel, const char* term, int width, int height,
                 int, int, void* userdata) {
   auto* context = static_cast<SessionContext*>(userdata);
-  if (context == nullptr) return SSH_ERROR;
+  if (context == nullptr || context->process) return SSH_ERROR;
   context->pty_requested = true;
   context->pty_width = width > 0 ? width : 80;
   context->pty_height = height > 0 ? height : 24;
   if (term != nullptr && *term != '\0') context->environment.emplace_back("TERM", term);
-  // The first embedded-server slice accepts the request so ordinary OpenSSH
-  // remains usable; the process backend is upgraded to a real PTY/ConPTY in
-  // the next parity layer.
   return SSH_OK;
 }
 
@@ -604,6 +700,7 @@ int channel_window(ssh_session, ssh_channel, int width, int height, int, int,
   if (context == nullptr) return SSH_ERROR;
   context->pty_width = width > 0 ? width : context->pty_width;
   context->pty_height = height > 0 ? height : context->pty_height;
+  if (context->process) context->process->resize(context->pty_width, context->pty_height);
   return SSH_OK;
 }
 
@@ -612,7 +709,8 @@ int start_session_process(SessionContext* context, const char* command) {
   try {
     context->process = std::make_unique<ChildProcess>();
     context->process->start(command == nullptr ? std::string{} : std::string(command),
-                            context->environment);
+                            context->environment, context->pty_requested,
+                            context->pty_width, context->pty_height);
     if (context->pty_requested && (command == nullptr || *command == '\0')) {
       static constexpr std::string_view motd = "🐈 Connected via tailcat SSH.\r\n";
       (void)ssh_channel_write(context->channel, motd.data(),
