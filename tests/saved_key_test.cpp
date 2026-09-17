@@ -16,6 +16,7 @@ int main() {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
   const auto path = std::filesystem::temp_directory_path() /
                     ("tailcat-key-" + std::to_string(nonce) + ".json");
+  assert(tailcat::resolve_tailcat_key_path(path.string()) == path.string());
   tailcat::save_tailcat_key(path.string(), original);
 
   const auto loaded = tailcat::load_saved_tailcat_key(path.string());
@@ -23,6 +24,10 @@ int main() {
   assert(loaded.identity.public_key == original.identity.public_key);
   assert(loaded.preshared_key == original.preshared_key);
   assert(loaded.region_id == 7);
+
+  const auto pub = tailcat::node_public_text(loaded.identity.public_key);
+  assert(pub.rfind("nodekey:", 0) == 0);
+  assert(pub.size() == std::string("nodekey:").size() + 64U);
 
   std::string json;
   {
