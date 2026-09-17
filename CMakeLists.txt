@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 set(TAILCAT_VERSION "0.1.0" CACHE STRING "Tailcat semantic version")
-string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TAILCAT_PROJECT_VERSION "${TAILCAT_VERSION}")
+string(REGEX MATCH "^[0-9]+\.[0-9]+\.[0-9]+" TAILCAT_PROJECT_VERSION "${TAILCAT_VERSION}")
 if(NOT TAILCAT_PROJECT_VERSION)
   message(FATAL_ERROR "TAILCAT_VERSION must start with MAJOR.MINOR.PATCH")
 endif()
@@ -122,6 +122,65 @@ if(NOT CURL_FOUND)
   FetchContent_MakeAvailable(tailcat_curl)
 endif()
 
+# Upstream Tailcat terminates SSH inside the Tailcat process rather than
+# forwarding port 22 to a host sshd. libssh is the native C server/SFTP layer
+# used by this rewrite. Keep optional integrations disabled so releases have a
+# small, deterministic SSH dependency surface.
+set(WITH_GSSAPI OFF CACHE BOOL "" FORCE)
+set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(WITH_SFTP ON CACHE BOOL "" FORCE)
+set(WITH_SERVER ON CACHE BOOL "" FORCE)
+set(WITH_PCAP OFF CACHE BOOL "" FORCE)
+set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_NACL OFF CACHE BOOL "" FORCE)
+set(WITH_FIDO2 OFF CACHE BOOL "" FORCE)
+set(WITH_PKCS11_URI OFF CACHE BOOL "" FORCE)
+set(WITH_PKCS11_PROVIDER OFF CACHE BOOL "" FORCE)
+set(WITH_SYMBOL_VERSIONING OFF CACHE BOOL "" FORCE)
+set(WITH_EXEC OFF CACHE BOOL "" FORCE)
+set(UNIT_TESTING OFF CACHE BOOL "" FORCE)
+set(CLIENT_TESTING OFF CACHE BOOL "" FORCE)
+set(SERVER_TESTING OFF CACHE BOOL "" FORCE)
+set(GSSAPI_TESTING OFF CACHE BOOL "" FORCE)
+set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
+
+# GitHub's MinGW Windows image does not ship OpenSSL development files. Pin
+# Mbed TLS and let libssh use it as its crypto backend there. Linux/macOS keep
+# the platform OpenSSL already available on their build images. The Mbed TLS
+# targets are created before libssh's FindMbedTLS module runs; the cache values
+# satisfy that module without relying on an installed copy.
+if(WIN32)
+  set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+  set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
+  set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    tailcat_mbedtls
+    GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG 068ff080b369adfac81509f9b57b2afabaf82dc5
+    GIT_SHALLOW FALSE
+  )
+  FetchContent_MakeAvailable(tailcat_mbedtls)
+  set(WITH_MBEDTLS ON CACHE BOOL "" FORCE)
+  set(MBEDTLS_INCLUDE_DIR "${tailcat_mbedtls_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+  set(MBEDTLS_SSL_LIBRARY mbedtls CACHE STRING "" FORCE)
+  set(MBEDTLS_CRYPTO_LIBRARY mbedcrypto CACHE STRING "" FORCE)
+  set(MBEDTLS_X509_LIBRARY mbedx509 CACHE STRING "" FORCE)
+else()
+  set(WITH_MBEDTLS OFF CACHE BOOL "" FORCE)
+endif()
+
+FetchContent_Declare(
+  tailcat_libssh
+  GIT_REPOSITORY https://github.com/libssh/libssh-mirror.git
+  GIT_TAG 07430deb9b97b751ec5ea5a7fc307f40bf042e0a
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_libssh)
+
 add_library(tailcat_core STATIC
     src/address_resolver.cpp
     src/cli.cpp
@@ -150,7 +209,7 @@ add_library(tailcat_core STATIC
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard tailcat_lwip_stack)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard tailcat_lwip_stack ssh::ssh)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
