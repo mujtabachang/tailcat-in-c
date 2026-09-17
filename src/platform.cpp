@@ -13,8 +13,11 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#include <shellapi.h>
+#include <windows.h>
 #include <winsock2.h>
 #else
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -98,6 +101,26 @@ void write_stdout_all(std::span<const std::uint8_t> data) {
     if (written == 0) throw std::runtime_error("stdout write returned zero bytes");
     offset += static_cast<std::size_t>(written);
   }
+}
+
+void open_system_url(const std::string& url) {
+  if (url.empty()) throw std::invalid_argument("URL is empty");
+#ifdef _WIN32
+  const auto result = reinterpret_cast<std::intptr_t>(
+      ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+  if (result <= 32) throw std::runtime_error("failed to open URL in default browser");
+#else
+  const pid_t pid = fork();
+  if (pid < 0) throw std::runtime_error("fork failed while opening browser");
+  if (pid == 0) {
+#ifdef __APPLE__
+    execlp("open", "open", url.c_str(), static_cast<char*>(nullptr));
+#else
+    execlp("xdg-open", "xdg-open", url.c_str(), static_cast<char*>(nullptr));
+#endif
+    _exit(127);
+  }
+#endif
 }
 
 }  // namespace tailcat
