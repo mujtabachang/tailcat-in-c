@@ -147,9 +147,7 @@ set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
 
 # GitHub's MinGW Windows image does not ship OpenSSL development files. Pin
 # Mbed TLS and let libssh use it as its crypto backend there. Linux/macOS keep
-# the platform OpenSSL already available on their build images. The Mbed TLS
-# targets are created before libssh's FindMbedTLS module runs; the cache values
-# satisfy that module without relying on an installed copy.
+# the platform OpenSSL already available on their build images.
 if(WIN32)
   set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
@@ -173,17 +171,28 @@ else()
   set(WITH_MBEDTLS OFF CACHE BOOL "" FORCE)
 endif()
 
+# Add libssh as an excluded subdirectory instead of using MakeAvailable's
+# ordinary add_subdirectory call. Tailcat statically consumes libssh; it does
+# not install libssh as a separate SDK. EXCLUDE_FROM_ALL also keeps libssh's
+# install/export rules out of Tailcat's install tree, avoiding a CMake export
+# failure on Windows where the in-tree mbedcrypto target is intentionally not
+# installed.
 FetchContent_Declare(
   tailcat_libssh
   GIT_REPOSITORY https://github.com/libssh/libssh-mirror.git
   GIT_TAG 07430deb9b97b751ec5ea5a7fc307f40bf042e0a
   GIT_SHALLOW FALSE
 )
-FetchContent_MakeAvailable(tailcat_libssh)
+FetchContent_GetProperties(tailcat_libssh)
+if(NOT tailcat_libssh_POPULATED)
+  FetchContent_Populate(tailcat_libssh)
+  add_subdirectory(${tailcat_libssh_SOURCE_DIR} ${tailcat_libssh_BINARY_DIR} EXCLUDE_FROM_ALL)
+endif()
 
 add_library(tailcat_core STATIC
     src/address_resolver.cpp
     src/cli.cpp
+    src/embedded_ssh.cpp
     src/extra_commands.cpp
     src/forward_command.cpp
     src/socks_command.cpp
