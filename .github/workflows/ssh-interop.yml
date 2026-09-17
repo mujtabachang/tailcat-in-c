@@ -88,14 +88,24 @@ jobs:
           path: ssh-address.txt
           if-no-files-found: error
           retention-days: 1
-      - name: Keep server alive until client command arrives
+      - name: Keep server alive until client reports success
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           pid=$(cat ssh-server.pid)
           for _ in $(seq 1 180); do
-            if grep -Fq 'ssh-e2e-command-ran' ssh-server.log; then
-              echo "embedded SSH remote command reached the separate server runner"
+            artifact_id=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              | jq -r '.artifacts[] | select(.name == "ssh-client-complete") | .id' \
+              | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              echo "separate SSH client runner reported remote-command success"
+              kill "$pid" || true
               exit 0
             fi
             if ! kill -0 "$pid" 2>/dev/null; then
@@ -107,7 +117,7 @@ jobs:
           done
           cat ssh-server.log
           kill "$pid" || true
-          echo "SSH client did not complete the remote command" >&2
+          echo "SSH client did not report remote-command success" >&2
           exit 1
 
   client:
@@ -159,8 +169,16 @@ jobs:
           set -euo pipefail
           addr=$(cat ssh-address-artifact/ssh-address.txt)
           echo "::add-mask::$addr"
-          output=$(timeout 120s ./cpp-tailcat ssh "$addr" "printf 'ssh-client-output'; printf 'ssh-e2e-command-ran' >&2")
+          output=$(timeout 120s ./cpp-tailcat ssh "$addr" "printf 'ssh-client-output'")
           test "$output" = "ssh-client-output"
+          printf 'ok\n' > ssh-client-complete.txt
+      - name: Publish SSH client completion
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-client-complete
+          path: ssh-client-complete.txt
+          if-no-files-found: error
+          retention-days: 1
 
   gate:
     name: Embedded SSH two-runner gate
