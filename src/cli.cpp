@@ -7,9 +7,9 @@
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
+#include "tailcat/embedded_ssh.hpp"
 #include "tailcat/extra_commands.hpp"
 #include "tailcat/forward_command.hpp"
-#include "tailcat/host_tcp.hpp"
 #include "tailcat/platform.hpp"
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
@@ -388,26 +388,18 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
       allow_keys = parse_allow_list(arg.substr(8U));
     } else if (arg == "ssh") {
       ssh_service = true;
-      ports.push_back(22U);
     } else if (!arg.empty() && arg[0] == '-') {
       throw std::invalid_argument("unsupported serve option: " + arg);
     } else {
       ports.push_back(parse_port(arg));
     }
   }
-  if (ports.empty()) {
+  if (!ssh_service && ports.empty()) {
     throw std::invalid_argument("serve requires ssh or one or more TCP ports");
   }
-
-  if (ssh_service) {
-    try {
-      auto probe = HostTcpStream::connect("127.0.0.1", 22U);
-      probe->close();
-    } catch (const std::exception& e) {
-      throw std::runtime_error(
-          std::string("serve ssh requires a local SSH server on 127.0.0.1:22: ") +
-          e.what());
-    }
+  if (ssh_service && std::find(ports.begin(), ports.end(), 22U) != ports.end()) {
+    throw std::invalid_argument(
+        "cannot serve embedded ssh and forward TCP port 22 at the same time");
   }
 
   auto server = make_server_bootstrap(psk_override, key_name);
@@ -421,16 +413,21 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
     };
   }
   TailcatServerDataPlane data(derp, server.identity, server.psk, std::move(allow));
-  ServedTcpPorts forwarding(data, std::move(ports));
+  std::unique_ptr<EmbeddedSshServer> embedded_ssh;
+  std::unique_ptr<ServedTcpPorts> forwarding;
+  if (ssh_service) embedded_ssh = std::make_unique<EmbeddedSshServer>(data, verbose);
+  if (!ports.empty()) forwarding = std::make_unique<ServedTcpPorts>(data, ports);
+
   log_server_address(server, verbose);
   if (verbose) {
     if (allow_keys) {
       std::cerr << "# allowing " << allow_keys->size() << " client key(s)\n";
     }
-    for (const auto port : forwarding.ports()) {
-      if (port == 22U && ssh_service) {
-        std::cerr << "# serving SSH -> 127.0.0.1:22\n";
-      } else {
+    if (embedded_ssh) {
+      std::cerr << "# serving embedded SSH on Tailcat TCP port 22\n";
+    }
+    if (forwarding) {
+      for (const auto port : forwarding->ports()) {
         std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port
                   << '\n';
       }
@@ -439,7 +436,8 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
 
   for (;;) {
     (void)data.pump_for(10ms);
-    forwarding.poll();
+    if (embedded_ssh) embedded_ssh->poll();
+    if (forwarding) forwarding->poll();
   }
 }
 
@@ -492,7 +490,7 @@ std::string usage() {
       << "  tailcat [options]                         Listen for a pipe connection\n"
       << "  tailcat <tc-address|dns-name> [port]      Connect to a peer\n"
       << "  tailcat serve [--psk=false] [--allow=NODEKEY,...] (ssh|PORT)...\n"
-      << "                                             Proxy selected services to localhost\n"
+      << "                                             Serve embedded SSH and/or proxy TCP\n"
       << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
       << "                                             Run system OpenSSH through Tailcat\n"
       << "  tailcat cp [scp options] SOURCE DEST      Copy with system scp through Tailcat\n"
