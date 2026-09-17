@@ -5,7 +5,7 @@ string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TAILCAT_PROJECT_VERSION "${TAILCA
 if(NOT TAILCAT_PROJECT_VERSION)
   message(FATAL_ERROR "TAILCAT_VERSION must start with MAJOR.MINOR.PATCH")
 endif()
-project(tailcat VERSION ${TAILCAT_PROJECT_VERSION} LANGUAGES CXX)
+project(tailcat VERSION ${TAILCAT_PROJECT_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,14 +13,27 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
+include(FetchContent)
+set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  tailcat_sodium
+  GIT_REPOSITORY https://github.com/robinlinden/libsodium-cmake.git
+  GIT_TAG e5b985ad0dd235d8c4307ea3a385b45e76c74c6a
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_sodium)
+
 add_library(tailcat_core
     src/cli.cpp
     src/platform.cpp
     src/protocol.cpp
+    src/crypto.cpp
+    src/derp.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
+target_link_libraries(tailcat_core PUBLIC sodium)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
@@ -48,5 +61,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_protocol_tests tests/protocol_test.cpp)
     target_link_libraries(tailcat_protocol_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_protocol COMMAND tailcat_protocol_tests)
+
+    add_executable(tailcat_derp_tests tests/derp_test.cpp)
+    target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_derp COMMAND tailcat_derp_tests)
   endif()
 endif()
