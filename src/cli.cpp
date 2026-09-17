@@ -13,6 +13,7 @@
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/rendezvous.hpp"
+#include "tailcat/saved_key.hpp"
 #include "tailcat/ssh_command.hpp"
 
 #include <chrono>
@@ -59,6 +60,11 @@ std::string key_hex(const Key32& key) {
   out << std::hex << std::setfill('0');
   for (const auto b : key) out << std::setw(2) << static_cast<unsigned>(b);
   return out.str();
+}
+
+NodeKeyPair runtime_identity(const std::string& key_path) {
+  if (key_path.empty() || key_path == "new") return generate_node_key();
+  return load_saved_tailcat_key(key_path).identity;
 }
 
 DerpRegion resolve_region(const ConnInfo& info) {
@@ -132,7 +138,7 @@ std::shared_ptr<InputState> start_stdin_reader() {
 }
 
 int run_client(std::string_view address, const std::vector<std::string>& args,
-               bool verbose) {
+               bool verbose, const std::string& key_path) {
   if (args.size() > 1U) {
     throw std::invalid_argument(
         "connect accepts at most one TCP port argument");
@@ -143,7 +149,7 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
   auto info = parse_tailcat_addr(address);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
-  const auto identity = generate_node_key();
+  const auto identity = runtime_identity(key_path);
 
   if (verbose) {
     std::cerr << "# connecting through DERP region " << region.region_id
@@ -185,9 +191,7 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
       pending.clear();
       pending_offset = 0U;
       std::lock_guard<std::mutex> lock(input->mutex);
-      if (!input->error.empty()) {
-        throw std::runtime_error(input->error);
-      }
+      if (!input->error.empty()) throw std::runtime_error(input->error);
       if (!input->chunks.empty()) {
         pending = std::move(input->chunks.front());
         input->chunks.pop_front();
@@ -214,14 +218,15 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
   }
 }
 
-int run_ping(const std::vector<std::string>& args, bool verbose) {
+int run_ping(const std::vector<std::string>& args, bool verbose,
+             const std::string& key_path) {
   if (args.size() != 1U) {
     throw std::invalid_argument("ping requires one <tc-address>");
   }
   const auto info = parse_tailcat_addr(args[0]);
   const auto region = resolve_region(info);
   const auto node = primary_derp_node(region);
-  const auto identity = generate_node_key();
+  const auto identity = runtime_identity(key_path);
   const auto disco = derive_disco_key(identity.private_key);
   DerpHttpClient derp(node, identity, "tailcat");
   derp.connect();
@@ -248,13 +253,29 @@ struct ServerBootstrap {
   std::string address;
 };
 
-ServerBootstrap make_server_bootstrap(bool use_psk) {
+ServerBootstrap make_server_bootstrap(std::optional<bool> psk_override,
+                                      const std::string& key_path) {
   ServerBootstrap out;
-  out.identity = generate_node_key();
+  std::int64_t saved_region = 0;
+  if (!key_path.empty() && key_path != "new") {
+    const auto saved = load_saved_tailcat_key(key_path);
+    out.identity = saved.identity;
+    out.psk = saved.preshared_key;
+    saved_region = saved.region_id;
+    if (psk_override && !*psk_override) out.psk.reset();
+    if (psk_override && *psk_override && !out.psk) {
+      throw std::runtime_error(
+          "saved key has no WireGuard PSK; regenerate it with PSK enabled");
+    }
+  } else {
+    out.identity = generate_node_key();
+    if (psk_override.value_or(true)) out.psk = generate_secret_key();
+  }
   out.disco = derive_disco_key(out.identity.private_key);
-  if (use_psk) out.psk = generate_secret_key();
+
   const auto map = fetch_derp_map(std::string(kDefaultDerpMap));
-  out.region = select_derp_region(map);
+  out.region = saved_region != 0 ? region_by_id(map, saved_region)
+                                 : select_derp_region(map);
   out.node = primary_derp_node(out.region);
   out.info.server_public = out.identity.public_key;
   out.info.server_disco_public = out.disco.public_key;
@@ -264,28 +285,31 @@ ServerBootstrap make_server_bootstrap(bool use_psk) {
   return out;
 }
 
-void log_server_address(const ServerBootstrap& server, bool verbose) {
+void log_server_address(const ServerBootstrap& server, bool verbose,
+                        const std::string& key_path) {
   std::cerr << "# Selected bootstrap relay region " << server.region.region_id;
   if (!server.region.region_name.empty()) {
     std::cerr << ", " << server.region.region_name;
   }
   std::cerr << '\n';
-  std::cerr << "# 🐈 Server listening with new address: " << server.address
-            << '\n';
+  std::cerr << "# 🐈 Server listening with address: " << server.address << '\n';
+  if (!key_path.empty() && key_path != "new") {
+    std::cerr << "# using saved identity " << key_path << '\n';
+  }
   if (verbose) std::cerr << "# DERP relay " << server.node.host_name << '\n';
   if (!server.psk) {
     std::cerr << "# ⚠️ WARNING: serving without a WireGuard PSK\n";
   }
 }
 
-int run_default_server(bool verbose) {
+int run_default_server(bool verbose, const std::string& key_path) {
   prepare_binary_stdio();
-  auto server = make_server_bootstrap(true);
+  auto server = make_server_bootstrap(std::nullopt, key_path);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
   derp.connect();
   TailcatServerDataPlane data(derp, server.identity, server.psk);
   auto listener = data.listen(1U);
-  log_server_address(server, verbose);
+  log_server_address(server, verbose, key_path);
 
   std::shared_ptr<LwipTcpStream> stream;
   for (;;) {
@@ -306,15 +330,16 @@ int run_default_server(bool verbose) {
   }
 }
 
-int run_serve(const std::vector<std::string>& args, bool verbose) {
-  bool use_psk = true;
+int run_serve(const std::vector<std::string>& args, bool verbose,
+              const std::string& key_path) {
+  std::optional<bool> psk_override;
   bool ssh_service = false;
   std::vector<std::uint16_t> ports;
   for (const auto& arg : args) {
     if (arg == "--psk=false") {
-      use_psk = false;
+      psk_override = false;
     } else if (arg == "--psk=true") {
-      use_psk = true;
+      psk_override = true;
     } else if (arg == "ssh") {
       ssh_service = true;
       ports.push_back(22U);
@@ -339,12 +364,12 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
     }
   }
 
-  auto server = make_server_bootstrap(use_psk);
+  auto server = make_server_bootstrap(psk_override, key_path);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
   derp.connect();
   TailcatServerDataPlane data(derp, server.identity, server.psk);
   ServedTcpPorts forwarding(data, std::move(ports));
-  log_server_address(server, verbose);
+  log_server_address(server, verbose, key_path);
   if (verbose) {
     for (const auto port : forwarding.ports()) {
       if (port == 22U && ssh_service) {
@@ -381,6 +406,19 @@ CommandLine parse_command_line(int argc, char** argv) {
         out.verbose = true;
         continue;
       }
+      if (arg == "--key") {
+        if (++i >= argc) throw std::invalid_argument("--key requires a path or 'new'");
+        out.key_path = argv[i];
+        continue;
+      }
+      constexpr std::string_view key_prefix = "--key=";
+      if (arg.rfind(key_prefix, 0) == 0) {
+        out.key_path = arg.substr(key_prefix.size());
+        if (out.key_path.empty()) {
+          throw std::invalid_argument("--key requires a path or 'new'");
+        }
+        continue;
+      }
       if (!arg.empty() && arg[0] != '-') {
         out.command = arg;
         continue;
@@ -404,7 +442,8 @@ std::string usage() {
       << "  tailcat cp [scp options] SOURCE DEST      Copy with system scp through Tailcat\n"
       << "  tailcat forward [--bind=ADDR] TCADDR [LOCAL:]REMOTE...\n"
       << "                                             Forward local TCP through Tailcat\n"
-      << "  tailcat browse ...                        Open a forwarded HTTP service\n"
+      << "  tailcat browse TCADDR [PORT]              Open a forwarded HTTP service\n"
+      << "  tailcat resolve <tc-address>              Embed the current DERP region\n"
       << "  tailcat recv ...                          Receive files\n"
       << "  tailcat socks ...                         Run a SOCKS proxy\n"
       << "  tailcat ping <tc-address>                 Probe a peer over DERP\n"
@@ -413,7 +452,9 @@ std::string usage() {
       << "Options:\n"
       << "  -h, --help       Show this help\n"
       << "  -V, --version    Show version\n"
-      << "  -v, --verbose    Enable diagnostic logging\n";
+      << "  -v, --verbose    Enable diagnostic logging\n"
+      << "  --key=PATH       Reuse a persisted Tailcat node identity\n"
+      << "  --key=new        Force an ephemeral identity\n";
   return out.str();
 }
 
@@ -428,23 +469,23 @@ int run(const CommandLine& cli) {
     return 0;
   }
 
-  if (cli.command.empty()) return run_default_server(cli.verbose);
+  if (cli.command.empty()) return run_default_server(cli.verbose, cli.key_path);
   if (cli.command == "parse") return run_parse(cli.args);
-  if (cli.command == "ping") return run_ping(cli.args, cli.verbose);
-  if (cli.command == "serve") return run_serve(cli.args, cli.verbose);
+  if (cli.command == "ping") return run_ping(cli.args, cli.verbose, cli.key_path);
+  if (cli.command == "serve") return run_serve(cli.args, cli.verbose, cli.key_path);
   if (cli.command == "forward") {
     return run_forward_command(cli.args, cli.verbose);
   }
   if (cli.command == "ssh") return run_ssh_command(cli.args, cli.verbose);
   if (cli.command.rfind("tc", 0) == 0) {
-    return run_client(cli.command, cli.args, cli.verbose);
+    return run_client(cli.command, cli.args, cli.verbose, cli.key_path);
   }
   if (const auto extra = run_extra_command(cli.command, cli.args, cli.verbose)) {
     return *extra;
   }
 
   static const std::unordered_set<std::string> commands = {
-      "browse", "recv", "socks", "genkey", "ls"};
+      "recv", "socks", "genkey", "ls"};
   if (commands.contains(cli.command)) return unavailable(cli.command);
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n"
