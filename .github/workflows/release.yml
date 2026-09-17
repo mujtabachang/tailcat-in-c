@@ -96,6 +96,7 @@ jobs:
             artifact: tailcat-windows-x86_64
             executable: tailcat.exe
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -112,7 +113,7 @@ jobs:
 
       - name: Test
         shell: bash
-        run: ctest --preset "${{ matrix.preset }}"
+        run: ctest --preset "${{ matrix.preset }}" --timeout 30 --output-on-failure
 
       - name: Install release files
         shell: bash
