@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -96,7 +97,8 @@ std::string unix_shell_quote(std::string_view value) {
 
 #ifdef _WIN32
 std::string windows_arg_quote(std::string_view value) {
-  if (has_control(value) || value.find_first_of("\"%!") != std::string_view::npos) {
+  if (has_control(value) ||
+      value.find_first_of("\"%!") != std::string_view::npos) {
     throw std::invalid_argument("ProxyCommand argument is unsafe for cmd.exe");
   }
   std::string out;
@@ -159,8 +161,6 @@ ParsedSshArgs parse_ssh_args(const std::vector<std::string>& args) {
       continue;
     }
     if (options && arg == "--skip-dns-safety-check") {
-      // Accepted for upstream CLI compatibility. It has no effect for direct
-      // tc addresses; DNS-name resolution is handled separately.
       continue;
     }
     out.destination = arg;
@@ -175,16 +175,16 @@ ParsedSshArgs parse_ssh_args(const std::vector<std::string>& args) {
   return out;
 }
 
-int exec_ssh(const std::vector<std::string>& args) {
+int exec_program(std::string_view program, const std::vector<std::string>& args) {
 #ifdef _WIN32
   std::vector<const char*> argv;
   argv.reserve(args.size() + 1U);
   for (const auto& arg : args) argv.push_back(arg.c_str());
   argv.push_back(nullptr);
-  const auto rc = _spawnvp(_P_WAIT, "ssh", argv.data());
+  const auto rc = _spawnvp(_P_WAIT, std::string(program).c_str(), argv.data());
   if (rc == -1) {
-    throw std::runtime_error(std::string("failed to run ssh.exe: ") +
-                             std::strerror(errno));
+    throw std::runtime_error("failed to run " + std::string(program) +
+                             ": " + std::strerror(errno));
   }
   return static_cast<int>(rc);
 #else
@@ -194,10 +194,47 @@ int exec_ssh(const std::vector<std::string>& args) {
     argv.push_back(const_cast<char*>(arg.c_str()));
   }
   argv.push_back(nullptr);
-  execvp("ssh", argv.data());
-  throw std::runtime_error(std::string("failed to exec ssh: ") +
-                           std::strerror(errno));
+  execvp(std::string(program).c_str(), argv.data());
+  throw std::runtime_error("failed to exec " + std::string(program) +
+                           ": " + std::strerror(errno));
 #endif
+}
+
+struct RemoteSpec {
+  std::string user;
+  std::string address;
+  std::string path;
+};
+
+std::optional<RemoteSpec> parse_tailcat_remote(std::string_view operand) {
+  const auto colon = operand.find(':');
+  if (colon == std::string_view::npos) return std::nullopt;
+  std::string host(operand.substr(0U, colon));
+  RemoteSpec out;
+  const auto at = host.find('@');
+  if (at != std::string::npos) {
+    out.user = host.substr(0U, at);
+    host.erase(0U, at + 1U);
+  }
+  if (host.rfind("tc", 0) != 0) return std::nullopt;
+  (void)parse_tailcat_addr(host);
+  out.address = std::move(host);
+  out.path = std::string(operand.substr(colon + 1U));
+  return out;
+}
+
+std::vector<std::string> ssh_transport_options(const std::string& proxy) {
+  return {
+      "-o", "UpdateHostKeys no",
+      "-o", "StrictHostKeyChecking no",
+#ifdef _WIN32
+      "-o", "UserKnownHostsFile NUL",
+#else
+      "-o", "UserKnownHostsFile /dev/null",
+#endif
+      "-o", "LogLevel ERROR",
+      "-o", "ProxyCommand=" + proxy,
+  };
 }
 
 }  // namespace
@@ -260,23 +297,69 @@ int run_ssh_command(const std::vector<std::string>& args, bool verbose) {
   std::string destination = ssh_destination_host(address);
   if (!user.empty()) destination = user + "@" + destination;
 
-  std::vector<std::string> ssh_args = {
-      "ssh",
-      "-o", "UpdateHostKeys no",
-      "-o", "StrictHostKeyChecking no",
-      "-o", "UserKnownHostsFile "
-#ifdef _WIN32
-          "NUL",
-#else
-          "/dev/null",
-#endif
-      "-o", "LogLevel ERROR",
-      "-o", "ProxyCommand=" + proxy,
-      "--",
-      destination,
-  };
+  std::vector<std::string> ssh_args = {"ssh"};
+  const auto options = ssh_transport_options(proxy);
+  ssh_args.insert(ssh_args.end(), options.begin(), options.end());
+  ssh_args.push_back("--");
+  ssh_args.push_back(destination);
   ssh_args.insert(ssh_args.end(), parsed.ssh_tail.begin(), parsed.ssh_tail.end());
-  return exec_ssh(ssh_args);
+  return exec_program("ssh", ssh_args);
+}
+
+int run_scp_command(const std::vector<std::string>& args, bool verbose) {
+  if (args.size() < 2U) {
+    throw std::invalid_argument("cp requires a source and destination");
+  }
+
+  std::string port = "22";
+  std::optional<RemoteSpec> remote;
+  std::vector<std::string> operands;
+  operands.reserve(args.size());
+
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    const auto& arg = args[i];
+    if (arg == "-P") {
+      if (++i >= args.size()) throw std::invalid_argument("-P requires a port");
+      port = args[i];
+      (void)parse_ssh_port(port);
+      continue;
+    }
+    if (arg.rfind("-P", 0) == 0 && arg.size() > 2U) {
+      port = arg.substr(2U);
+      (void)parse_ssh_port(port);
+      continue;
+    }
+
+    const auto candidate = parse_tailcat_remote(arg);
+    if (!candidate) {
+      operands.push_back(arg);
+      continue;
+    }
+    if (remote) {
+      throw std::invalid_argument(
+          "cp currently supports exactly one Tailcat remote operand");
+    }
+    remote = *candidate;
+    std::string rewritten;
+    if (!candidate->user.empty()) rewritten = candidate->user + "@";
+    rewritten += ssh_destination_host(candidate->address);
+    rewritten.push_back(':');
+    rewritten += candidate->path;
+    operands.push_back(std::move(rewritten));
+  }
+
+  if (!remote) {
+    throw std::invalid_argument(
+        "cp requires one remote operand of the form [user@]tc...:path");
+  }
+
+  const auto proxy = ssh_proxy_command(current_executable_path(), remote->address,
+                                       port, verbose);
+  std::vector<std::string> scp_args = {"scp"};
+  const auto options = ssh_transport_options(proxy);
+  scp_args.insert(scp_args.end(), options.begin(), options.end());
+  scp_args.insert(scp_args.end(), operands.begin(), operands.end());
+  return exec_program("scp", scp_args);
 }
 
 }  // namespace tailcat
