@@ -15,6 +15,13 @@
 #define LWIP_ICMP 0
 #define LWIP_ICMP6 1
 
+/* lwIP's IPv6 reassembly helper contains a pointer and therefore does not fit
+ * in the 8-byte IPv6 fragment-header scratch area on 64-bit targets. Keeping
+ * reassembly enabled requires a copied fragment header; without this lwIP
+ * asserts from ip6_reass_tmr() shortly after startup.
+ */
+#define IPV6_FRAG_COPYHEADER 1
+
 /* Tailcat's virtual interface carries raw IP packets, never Ethernet frames.
  * Disable every Ethernet/ARP-dependent feature so the raw-IP netif does not
  * pull in an unused L2 implementation.
