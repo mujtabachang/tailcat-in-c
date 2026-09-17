@@ -87,13 +87,16 @@ struct LocalTcpForwarder::Impl {
   Impl(TailcatClientDataPlane& data_plane,
        std::vector<TcpForwardMapping> mappings, std::string bind)
       : data(data_plane), bind_address(std::move(bind)), configured(std::move(mappings)) {
-    if (configured.empty()) throw std::invalid_argument("forward requires at least one port mapping");
-    for (const auto& mapping : configured) {
-      if (mapping.local_port == 0U || mapping.remote_port == 0U) {
-        throw std::invalid_argument("forward ports must be non-zero");
+    if (configured.empty()) {
+      throw std::invalid_argument("forward requires at least one port mapping");
+    }
+    for (auto& mapping : configured) {
+      if (mapping.remote_port == 0U) {
+        throw std::invalid_argument("remote forward port must be non-zero");
       }
       auto listener = std::make_shared<HostTcpListener>(
           HostTcpListener::listen(bind_address, mapping.local_port));
+      if (mapping.local_port == 0U) mapping.local_port = listener->port();
       auto accepted = std::make_shared<AcceptedQueue>();
       listeners.push_back(Listener{mapping, listener, accepted});
       std::thread([listener, accepted] {
