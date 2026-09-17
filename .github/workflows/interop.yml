@@ -1,0 +1,228 @@
+name: interop
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "third_party/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/interop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: interop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_TAILCAT_SHA: 79dc7eff30d78fbe9a2c69c725eb05c82d0d542d
+
+jobs:
+  cpp-runner:
+    name: C++ server / C++ client
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Build native C++ Tailcat
+        run: |
+          cmake --preset linux
+          cmake --build --preset linux
+          ctest --preset linux
+          cp build/linux/tailcat ./cpp-tailcat
+
+      - name: Start C++ server
+        id: cpp_server
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > cpp-server.log
+          nohup ./cpp-tailcat >cpp-server.log 2>&1 &
+          echo "$!" > cpp-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' cpp-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              printf '%s\n' "$addr" > cpp-address.txt
+              echo "C++ server address: $addr"
+              exit 0
+            fi
+            if ! kill -0 "$(cat cpp-server.pid)" 2>/dev/null; then
+              cat cpp-server.log
+              echo "C++ server exited before publishing an address" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat cpp-server.log
+          echo "Timed out waiting for C++ server address" >&2
+          exit 1
+
+      - name: Publish C++ server address
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-server-address
+          path: cpp-address.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Wait for Go client and verify C++ server
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat cpp-server.pid)
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || {
+                cat cpp-server.log
+                exit 1
+              }
+              grep -F 'go-client-to-cpp-server' cpp-server.log
+              exit 0
+            fi
+            sleep 1
+          done
+          cat cpp-server.log
+          kill "$pid" || true
+          echo "Go client never completed the C++ server session" >&2
+          exit 1
+
+      - name: Wait for Go server address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf go-address-artifact
+          for _ in $(seq 1 180); do
+            if gh run download "$GITHUB_RUN_ID" -n go-server-address -D go-address-artifact 2>/dev/null; then
+              test -s go-address-artifact/go-address.txt
+              cat go-address-artifact/go-address.txt
+              exit 0
+            fi
+            rm -rf go-address-artifact
+            sleep 1
+          done
+          echo "Timed out waiting for Go server address artifact" >&2
+          exit 1
+
+      - name: Connect C++ client to Go server
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat go-address-artifact/go-address.txt)
+          printf 'cpp-client-to-go-server\n' | ./cpp-tailcat "$addr"
+
+  go-runner:
+    name: Go client / Go server
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout upstream Go Tailcat
+        uses: actions/checkout@v4
+        with:
+          repository: tailscale/tailcat
+          ref: ${{ env.UPSTREAM_TAILCAT_SHA }}
+          path: upstream-go
+
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: upstream-go/go.mod
+          cache-dependency-path: upstream-go/go.sum
+
+      - name: Build upstream Go Tailcat
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream-go
+          go build -o "$GITHUB_WORKSPACE/go-tailcat" ./cmd/tailcat
+          "$GITHUB_WORKSPACE/go-tailcat" --version || true
+
+      - name: Wait for C++ server address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf cpp-address-artifact
+          for _ in $(seq 1 180); do
+            if gh run download "$GITHUB_RUN_ID" -n cpp-server-address -D cpp-address-artifact 2>/dev/null; then
+              test -s cpp-address-artifact/cpp-address.txt
+              cat cpp-address-artifact/cpp-address.txt
+              exit 0
+            fi
+            rm -rf cpp-address-artifact
+            sleep 1
+          done
+          echo "Timed out waiting for C++ server address artifact" >&2
+          exit 1
+
+      - name: Connect Go client to C++ server
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat cpp-address-artifact/cpp-address.txt)
+          printf 'go-client-to-cpp-server\n' | ./go-tailcat "$addr"
+
+      - name: Start Go server
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > go-server.log
+          nohup ./go-tailcat >go-server.log 2>&1 &
+          echo "$!" > go-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' go-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              printf '%s\n' "$addr" > go-address.txt
+              echo "Go server address: $addr"
+              exit 0
+            fi
+            if ! kill -0 "$(cat go-server.pid)" 2>/dev/null; then
+              cat go-server.log
+              echo "Go server exited before publishing an address" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat go-server.log
+          echo "Timed out waiting for Go server address" >&2
+          exit 1
+
+      - name: Publish Go server address
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-server-address
+          path: go-address.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Wait for C++ client and verify Go server
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat go-server.pid)
+          for _ in $(seq 1 180); do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || {
+                cat go-server.log
+                exit 1
+              }
+              grep -F 'cpp-client-to-go-server' go-server.log
+              exit 0
+            fi
+            sleep 1
+          done
+          cat go-server.log
+          kill "$pid" || true
+          echo "C++ client never completed the Go server session" >&2
+          exit 1
