@@ -1,29 +1,30 @@
 # Releasing Tailcat in C++
 
-Releases are created by `.github/workflows/release.yml`. The workflow is intentionally manual and only permits releases from the `main` branch.
+The canonical version is stored in the root [VERSION](VERSION) file. A change to `VERSION` on `main` triggers `.github/workflows/release.yml`.
+
+Manual workflow dispatch remains available for explicitly requested builds, but normal project releases should be made by a reviewed version bump on `main`.
 
 ## Release quality gate
 
-Before starting a release:
+Before changing `VERSION`:
 
-1. `main` must be green on Linux, macOS, and Windows.
-2. The version must describe the implementation honestly. While upstream feature parity and comprehensive interoperability coverage are still incomplete, use a prerelease version such as `0.1.0-alpha.1` and enable the GitHub **prerelease** flag.
-3. Review the feature-status table in `README.md`. A release must not be described as a drop-in upstream replacement while required rows remain partial or missing.
-4. Security-sensitive protocol, SSH, file-service, SOCKS, UDP, direct-path, and key-handling changes should have tests that exercise their failure paths, not only successful connections.
+1. The exact current `main` commit must pass the Linux, macOS, and Windows `build` matrix.
+2. Transport changes must preserve the C++↔C++ and pinned upstream Go↔C++ interoperability gate.
+3. SSH changes must preserve the separate embedded-SSH interoperability gate.
+4. Update the feature matrix in `README.md`; do not describe a partial feature as complete.
+5. While required parity items remain, use a prerelease semantic version such as `0.2.0-beta.1`.
 
 ## Create a release
 
-1. Merge all intended changes into `main`.
-2. Confirm the normal `build` workflow passed for the exact `main` commit.
-3. Open **Actions → release → Run workflow** in GitHub.
-4. Select `main`.
-5. Enter a semantic version without the `v` prefix, for example `0.1.0-alpha.1` or, once stable, `1.0.0`.
-6. Enable **prerelease** when appropriate.
-7. Run the workflow.
+1. Merge intended changes to `main`.
+2. Confirm the quality gates above.
+3. Change `VERSION` to the new semantic version and commit it to `main`.
+4. The release workflow validates that the tag does not already exist.
+5. It configures, builds, and runs CTest on Linux x86_64, macOS arm64, and Windows x86_64.
+6. It installs each executable into a clean staging directory and verifies `tailcat --version`.
+7. Only after all platform jobs succeed does it create the Git tag and GitHub Release.
 
-The workflow validates the branch and version, rejects an existing tag, builds and tests on Linux, macOS, and Windows, installs the release files, and verifies that `tailcat --version` reports the requested version.
-
-If every platform succeeds, the publish job creates the `v<version>` tag at the exact `main` commit used by the workflow and publishes a GitHub Release with generated release notes.
+A hyphenated version such as `0.2.0-beta.1` is automatically marked as a prerelease when triggered by a `VERSION` push.
 
 ## Release artifacts
 
@@ -34,15 +35,25 @@ Each release contains:
 - `tailcat-<version>-windows-x86_64.zip`
 - `SHA256SUMS`
 
-The version passed by the release workflow is forwarded to CMake as `TAILCAT_VERSION`, keeping the binary version and GitHub tag in sync.
+The tag points to the exact `main` commit used to build those artifacts.
+
+## Manual dispatch
+
+Actions → **release** → **Run workflow** can still be used from `main`. Supply a semantic version without the `v` prefix and choose whether it is a prerelease. Existing tags are rejected.
 
 ## Local versioned build
 
+The default comes from `VERSION`:
+
 ```sh
-cmake --preset linux -DTAILCAT_VERSION=0.1.0-alpha.1
+cmake --preset linux
 cmake --build --preset linux
 ctest --preset linux
 ./build/linux/tailcat --version
 ```
 
-Use the matching `macos` or `windows` preset on those platforms.
+An explicit development override remains possible:
+
+```sh
+cmake --preset linux -DTAILCAT_VERSION=0.2.0-beta.1
+```

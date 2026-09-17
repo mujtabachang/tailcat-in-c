@@ -4,11 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/release.yml"
+      - "VERSION"
   workflow_dispatch:
     inputs:
       version:
-        description: "Semantic version without the v prefix (for example: 0.1.0)"
+        description: "Semantic version without the v prefix"
         required: true
         type: string
       prerelease:
@@ -18,7 +18,7 @@ on:
         type: boolean
 
 concurrency:
-  group: release-${{ github.event_name }}-${{ github.run_number }}-${{ inputs.version }}
+  group: release-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -32,6 +32,10 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Require main branch
         shell: bash
         run: |
@@ -49,22 +53,23 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-            VERSION="0.1.0-dev.${GITHUB_RUN_NUMBER}"
-            PRERELEASE=true
+            VERSION="$(tr -d '\r\n' < VERSION)"
+            if [[ "${VERSION}" == *-* ]]; then
+              PRERELEASE=true
+            else
+              PRERELEASE=false
+            fi
           else
             VERSION="${INPUT_VERSION}"
             PRERELEASE="${INPUT_PRERELEASE}"
           fi
+
           if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Invalid version '${VERSION}'. Use a version such as 0.1.0 or 0.2.0-rc.1."
+            echo "Invalid version '${VERSION}'. Use a version such as 0.2.0-beta.1 or 1.0.0."
             exit 1
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Require a new tag
         shell: bash
@@ -77,7 +82,7 @@ jobs:
           fi
 
   build:
-    name: Build ${{ matrix.artifact }}
+    name: Build and test ${{ matrix.artifact }}
     needs: validate
     strategy:
       fail-fast: false
@@ -96,7 +101,7 @@ jobs:
             artifact: tailcat-windows-x86_64
             executable: tailcat.exe
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -105,11 +110,15 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake --preset "${{ matrix.preset }}" -DTAILCAT_VERSION="${{ needs.validate.outputs.version }}" -DTAILCAT_BUILD_TESTS=OFF
+        run: cmake --preset "${{ matrix.preset }}" -DTAILCAT_VERSION="${{ needs.validate.outputs.version }}" -DTAILCAT_BUILD_TESTS=ON
 
       - name: Build
         shell: bash
         run: cmake --build --preset "${{ matrix.preset }}"
+
+      - name: Test
+        shell: bash
+        run: ctest --preset "${{ matrix.preset }}" --output-on-failure --timeout 180
 
       - name: Install release files
         shell: bash
@@ -160,19 +169,13 @@ jobs:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          tar -C release-assets/tailcat-linux-x86_64/bin \
-            -czf "tailcat-${VERSION}-linux-x86_64.tar.gz" tailcat
-          tar -C release-assets/tailcat-macos-arm64/bin \
-            -czf "tailcat-${VERSION}-macos-arm64.tar.gz" tailcat
+          tar -C release-assets/tailcat-linux-x86_64/bin             -czf "tailcat-${VERSION}-linux-x86_64.tar.gz" tailcat
+          tar -C release-assets/tailcat-macos-arm64/bin             -czf "tailcat-${VERSION}-macos-arm64.tar.gz" tailcat
           (
             cd release-assets/tailcat-windows-x86_64/bin
             zip -9 "${GITHUB_WORKSPACE}/tailcat-${VERSION}-windows-x86_64.zip" tailcat.exe
           )
-          sha256sum \
-            "tailcat-${VERSION}-linux-x86_64.tar.gz" \
-            "tailcat-${VERSION}-macos-arm64.tar.gz" \
-            "tailcat-${VERSION}-windows-x86_64.zip" \
-            > SHA256SUMS
+          sha256sum             "tailcat-${VERSION}-linux-x86_64.tar.gz"             "tailcat-${VERSION}-macos-arm64.tar.gz"             "tailcat-${VERSION}-windows-x86_64.zip"             > SHA256SUMS
 
       - name: Create tag and GitHub Release
         shell: bash

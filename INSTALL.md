@@ -1,23 +1,32 @@
 # Installing Tailcat in C++
 
-Tailcat in C++ uses CMake and a C++20 compiler. The shipped implementation has no Go toolchain or Go runtime requirement.
+Tailcat in C++ is a native C++20 application. The shipped executable has no Go runtime or Go helper requirement.
+
+## Download a release
+
+GitHub Releases provide prebuilt archives for:
+
+- Linux x86_64
+- macOS arm64
+- Windows x86_64
+- `SHA256SUMS` for integrity verification
+
+Prerelease versions are used while upstream feature parity is still incomplete.
 
 ## Build requirements
 
 - CMake 3.24+
 - Ninja
 - a C++20 compiler
-- Git/network access during CMake configure so pinned native dependencies can be fetched
+- Git/network access during configure for pinned native dependencies
 
-For the current SSH-oriented commands:
+Command-specific runtime tools:
 
-- `tailcat ssh` requires a system OpenSSH `ssh` client in `PATH`.
-- `tailcat cp` requires a system OpenSSH `scp` client in `PATH`.
-- `tailcat serve ssh` currently requires a local SSH daemon reachable on the host loopback SSH target; see README.md for the current SSH parity status.
+- `tailcat ssh` requires a system OpenSSH `ssh` executable.
+- `tailcat cp` requires a system `scp` executable.
+- `tailcat serve ssh` and `tailcat serve no-auth-ssh` use Tailcat's embedded libssh server; a host `sshd` is **not** required.
 
 ## Build from source
-
-Clone the repository and choose the preset for your platform.
 
 ### Linux
 
@@ -39,7 +48,7 @@ sudo cmake --install build/macos
 
 ### Windows
 
-Run from a shell with CMake, Ninja, and a supported C++20 compiler available:
+Run in a shell with CMake, Ninja, and the configured C++20 toolchain:
 
 ```powershell
 cmake --preset windows
@@ -48,14 +57,36 @@ ctest --preset windows
 cmake --install build/windows
 ```
 
-The GitHub Actions Windows build uses the `windows` preset and runs the same CTest suite used on Linux and macOS.
+The Windows build statically links the MinGW runtime used by the GitHub release build. libssh uses the pinned Mbed TLS backend on Windows.
 
-## What is installed
+## Versioned local build
 
-CMake installs the `tailcat` executable (`tailcat.exe` on Windows). The data plane and protocol implementation are linked into that executable; there is no separate Go helper process or daemon to install.
+The default version comes from the repository's `VERSION` file. It can be overridden for development:
+
+```sh
+cmake --preset linux -DTAILCAT_VERSION=0.2.0-beta.1
+cmake --build --preset linux
+./build/linux/tailcat --version
+```
+
+## SSH server setup
+
+Authenticated SSH:
+
+```sh
+tailcat serve --ssh-authorized-keys="$HOME/.ssh/authorized_keys" ssh
+```
+
+Address/tunnel-auth-only SSH:
+
+```sh
+tailcat serve no-auth-ssh
+```
+
+The latter grants shell access to any peer that can establish the Tailcat session. Protect the `tc...` address and use `--allow` when possible.
 
 ## Compatibility status
 
-The native DERP/WireGuard/lwIP TCP path is implemented and is exercised by the cross-platform test suite. The project is still completing upstream Tailcat feature parity, notably direct NAT traversal, embedded SSH/SFTP/file services, SOCKS5, exit-node behavior, and UDP. See the feature table in [README.md](README.md) before depending on an upstream command that is not yet marked complete.
+The DERP/WireGuard/lwIP TCP data path is live-tested against both the C++ implementation and a pinned upstream Go Tailcat reference. Embedded SSH remote exec and Unix PTY behavior are also tested between separate runners.
 
-For production-like use during the parity phase, prefer a prerelease build and keep the exact version available for diagnostics.
+Still incomplete: SFTP/`files`/`recv`/`ls`, Windows ConPTY parity, SOCKS UDP, exit-node forwarding, full application UDP forwarding, SSH DNS safety probing, and direct NAT traversal. See [README.md](README.md) for the current matrix.

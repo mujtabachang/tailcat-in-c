@@ -4,51 +4,65 @@
 
 # Tailcat in C++
 
-This repository is a native C++20 rewrite of [tailscale/tailcat](https://github.com/tailscale/tailcat). It speaks Tailcat's `tc...` address format and implements the encrypted data path without a Go runtime, Go source tree, Go shared library, or Go helper process.
+This repository is a native C++20 rewrite of [tailscale/tailcat](https://github.com/tailscale/tailcat). The shipped implementation contains no Go runtime, Go helper process, or Go source dependency.
 
-The compatibility target is upstream Tailcat, currently tracked against `tailscale/tailcat` main. Features are only called complete here when the native implementation has matching behavior and tests; a command name existing in `--help` is not considered parity.
+The compatibility target is upstream Tailcat's `tc...` protocol. Compatibility is verified in GitHub Actions with separate runners: C++↔C++ is tested first, followed by upstream Go→C++ and C++→upstream Go data-plane connections.
 
-## Current feature status
+## Current status
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| `tc...` addresses | ✅ | CBOR/base64url parse and encode, including embedded DERP regions |
-| Node/disco keys + PSK | ✅ | Native X25519/libsodium primitives; persistent key-file format is implemented |
-| DERP v2 | ✅ | HTTPS/TLS connection, authenticated framing, MEOW/MEOWED rendezvous |
-| WireGuard transport | ✅ | Native C WireGuard engine with optional preshared key |
-| Userspace TCP | ✅ | lwIP IPv6/TCP, no kernel TUN or routing-table changes |
+| `tc...` addresses | ✅ | CBOR/base64url encoding and decoding, including embedded DERP region data |
+| Node/disco keys, PSK, saved identities | ✅ | Native key generation, named/default client and server identities, `genkey`, `printpub`, list/delete |
+| DERP v2 + rendezvous | ✅ | HTTPS/TLS, authenticated DERP framing, MEOW/MEOWED |
+| WireGuard data plane | ✅ | Native C WireGuard engine with optional preshared key |
+| Userspace IPv6/TCP | ✅ | lwIP TCP over WireGuard, without TUN devices or host routes |
+| C++↔C++ transport | ✅ | Live two-runner GitHub Actions interoperability test |
+| Upstream Go interoperability | ✅ | Live Go client→C++ server and C++ client→Go server tests against a pinned upstream revision |
 | Pipe/listen/connect | ✅ | Binary-safe stdin/stdout transport |
-| `serve` TCP ports | ✅ | Selected ports forwarded to host services |
-| `forward` TCP | ✅ | Local TCP forwarding, including OS-assigned local port `0` |
-| `browse` | ✅ | Opens an HTTP service through an ephemeral local forward |
+| TCP `serve`, `forward`, `browse` | ✅ | Host service exposure and local TCP forwarding |
 | `ping`, `parse`, `resolve` | ✅ | Native implementations |
-| `ssh` client | ✅ | System OpenSSH through Tailcat `ProxyCommand` |
-| `cp` client | ✅ | System `scp` through the same Tailcat transport |
-| Persistent server identity | 🟡 | Key serialization/loading is native; full upstream `genkey` CLI parity is still being completed |
-| Embedded SSH/SFTP server | 🟡 | `serve ssh` currently bridges to a local `sshd`; upstream's embedded server is not yet ported |
-| DNS TXT Tailcat names | ❌ | DNS lookup and public-name SSH safety probe remain to be ported |
-| `files`, `recv`, `ls` | ❌ | Embedded SFTP/file-service semantics remain to be ported |
-| SOCKS5 | ❌ | TCP and UDP proxy support remain to be ported |
-| Exit-node forwarding | ❌ | Arbitrary destination TCP/UDP remains to be ported |
-| Application UDP | ❌ | lwIP/data-plane UDP plumbing remains to be ported |
-| Direct NAT traversal | ❌ | Current connections stay DERP-relayed; STUN/disco/direct-path upgrade remains to be ported |
+| DNS `tailcat=` TXT names | 🟡 | Native TXT resolution and anti-leak address classification; upstream SSH public-name safety probing is still incomplete |
+| Userspace UDP | 🟡 | lwIP UDP sockets and packet tests exist; full application UDP forwarding is not complete |
+| SOCKS5 | 🟡 | TCP CONNECT through a fixed Tailcat peer works; UDP ASSOCIATE and full upstream destination behavior remain |
+| SSH client | ✅ | System OpenSSH using Tailcat as `ProxyCommand` |
+| Embedded SSH server | 🟡 | In-process libssh server, persistent Ed25519 host key, public-key auth, `no-auth-ssh`, shell/exec, Unix PTY/window resize; Windows ConPTY and SFTP remain |
+| `cp` | 🟡 | System `scp` client is wired through Tailcat; full compatibility depends on the still-pending SFTP subsystem |
+| `files`, `recv`, `ls` | ❌ | Rooted SFTP and file-service policy parity are not implemented yet |
+| Exit-node forwarding | ❌ | Arbitrary destination TCP/UDP forwarding is not implemented yet |
+| Direct NAT traversal | ❌ | Encrypted traffic currently stays DERP-relayed; STUN/disco/direct UDP path upgrade remains |
 
-`✅` means the native path exists and is covered by the repository's CTest suite. `🟡` means useful functionality exists but does not yet match all upstream behavior. `❌` means it is deliberately not presented as implemented.
+`✅` means the native path exists and has automated coverage. `🟡` means useful functionality exists but upstream parity is incomplete. `❌` is intentionally not presented as implemented.
 
 ## SSH
 
-SSH is the primary supported application workflow in the current rewrite.
+SSH is terminated inside Tailcat; a host `sshd` is not required.
 
-### Server
+### Public-key-authenticated server
 
-`serve ssh` exposes a local SSH daemon through Tailcat. The daemon does not need to listen on a public interface; Tailcat transports the SSH byte stream through the encrypted WireGuard session.
+Current upstream semantics require authorized keys for the `ssh` service:
 
 ```sh
-tailcat serve ssh
-# 🐈 Server listening with new address: tc...
+tailcat serve --ssh-authorized-keys="$HOME/.ssh/authorized_keys" ssh
+# 🐈 Server listening with address: tc...
 ```
 
-The current implementation checks the local SSH service before advertising the Tailcat address. This is intentionally different from upstream Tailcat's embedded SSH server and is listed as partial parity above.
+`--ssh-authorized-keys` accepts an authorized_keys file, a literal OpenSSH public-key line, or a GitHub key source such as `alice@github`.
+
+You can additionally restrict which authenticated Tailcat node keys may reach the server:
+
+```sh
+tailcat serve --allow=nodekey:... \
+  --ssh-authorized-keys="$HOME/.ssh/authorized_keys" ssh
+```
+
+### Address-auth-only SSH
+
+```sh
+tailcat serve no-auth-ssh
+```
+
+This deliberately skips a second SSH public-key check. Anyone who can establish the Tailcat session can receive a shell, so keep the address secret and preferably combine it with `--allow`.
 
 ### Client
 
@@ -58,14 +72,15 @@ tailcat ssh user@tc...
 tailcat ssh tc... uname -a
 ```
 
-Tailcat starts the system `ssh` client with Tailcat itself as `ProxyCommand`. OpenSSH therefore continues to handle keys, `ssh-agent`, PTYs, interactive shells, remote commands, and the user's SSH configuration. The proxy stream is unbuffered and binary-safe, including binary stdin/stdout mode on Windows.
+Tailcat launches the system OpenSSH client with Tailcat as its `ProxyCommand`. The proxy stream is unbuffered and binary-safe.
 
-File copying uses the same transport:
+File-copy client plumbing uses the same transport:
 
 ```sh
 tailcat cp ./report.pdf tc...:/tmp/report.pdf
-tailcat cp -r ./directory user@tc...:/tmp/
 ```
+
+The embedded SFTP server is still pending, so `cp` is not yet considered full upstream parity.
 
 ## Basic transport examples
 
@@ -73,10 +88,10 @@ Start the default pipe server:
 
 ```sh
 tailcat
-# 🐈 Server listening with new address: tc...
+# 🐈 Server listening with address: tc...
 ```
 
-Send bytes from a client:
+Send bytes from another Tailcat:
 
 ```sh
 echo hello | tailcat tc...
@@ -88,7 +103,7 @@ Expose host TCP services:
 tailcat serve 8080 8443
 ```
 
-Connect directly or create a local forward:
+Connect or forward locally:
 
 ```sh
 tailcat tc... 8080
@@ -96,7 +111,7 @@ tailcat forward tc... 18080:8080
 tailcat forward tc... 0:8080
 ```
 
-Open a remote HTTP service in the default browser:
+Open a remote HTTP service:
 
 ```sh
 tailcat browse tc...
@@ -109,7 +124,9 @@ Requirements:
 - CMake 3.24+
 - Ninja
 - a C++20 compiler
-- network access during configure so pinned native dependencies can be fetched
+- network access during configure for pinned native dependencies
+- system OpenSSH `ssh` for `tailcat ssh`
+- system `scp` for `tailcat cp`
 
 Linux:
 
@@ -135,33 +152,37 @@ cmake --build --preset windows
 ctest --preset windows
 ```
 
-See [INSTALL.md](INSTALL.md) for installation and runtime requirements.
+See [INSTALL.md](INSTALL.md) for installation details.
 
 ## Native dependencies
 
-The shipped implementation is C/C++ only. CMake pins native dependencies used by the data path:
+The shipped program is C/C++. CMake pins the native dependencies used by the implementation:
 
 - libsodium for Curve25519/NaCl primitives
-- wireguard-lwip's C WireGuard implementation
-- lwIP for the userspace TCP/IP stack
-- libcurl for verified HTTPS/TLS transport
+- wireguard-lwip's C WireGuard engine
+- lwIP for the userspace IP/TCP/UDP stack
+- libcurl for verified DERP HTTPS/TLS transport
+- libssh for the embedded SSH server
+- Mbed TLS as libssh's Windows crypto backend
 - nlohmann/json for DERP maps and persisted configuration
 
-There is no Go dependency in the shipped implementation.
+## Network and interoperability model
 
-## Network model
+DERP currently carries rendezvous and encrypted peer packets. WireGuard provides end-to-end encryption; DERP sees ciphertext. Direct STUN/disco/NAT traversal is the major remaining transport-parity item.
 
-Today the initial rendezvous and all encrypted data packets use DERP. WireGuard still provides end-to-end encryption; the DERP relay carries ciphertext. Upstream Tailcat can upgrade suitable peers to a direct UDP path after NAT discovery. That direct-path upgrade is one of the major remaining parity items and is not silently emulated by an unrelated transport.
+The `.github/workflows/interop.yml` gate builds a pinned upstream Go Tailcat reference and verifies both cross-language directions on separate GitHub runners. `.github/workflows/ssh-interop.yml` separately exercises the embedded C++ SSH server, including remote exec, SSH public-key authentication, and a Unix PTY session.
 
-## CI and releases
+## Releases
 
-Every pull request and every push to `main` builds and runs CTest on Ubuntu, macOS, and Windows. Releases are produced only from `main` by the manual release workflow described in [RELEASING.md](RELEASING.md).
+The repository version is stored in [VERSION](VERSION). A version change on `main` runs the release workflow, which builds, tests, installs, and version-checks Linux x86_64, macOS arm64, and Windows x86_64 artifacts before publishing a GitHub Release and `SHA256SUMS`.
 
-Until the parity table is complete and upstream interoperability coverage is comprehensive, releases should be treated as development/prerelease builds rather than a claim of full Tailcat replacement.
+See [RELEASING.md](RELEASING.md) for the release policy.
+
+Until the remaining parity rows are complete, releases are prereleases and are not a claim of full upstream Tailcat replacement.
 
 ## Security
 
-A Tailcat address can contain secret connection material, including a WireGuard preshared key. Treat it as a credential. See [SECURITY.md](SECURITY.md) for the rewrite-specific threat model.
+A `tc...` address can contain secret connection material, including a WireGuard preshared key. Treat secret-bearing addresses like credentials. See [SECURITY.md](SECURITY.md).
 
 ## License
 
