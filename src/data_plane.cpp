@@ -51,6 +51,14 @@ std::shared_ptr<LwipTcpStream> TailcatClientDataPlane::dial(std::uint16_t port) 
   return stack_.connect(server_address_, port);
 }
 
+std::shared_ptr<LwipUdpSocket> TailcatClientDataPlane::dial_udp(
+    std::uint16_t port) {
+  if (!wireguard_.session_established()) {
+    throw std::runtime_error("Tailcat WireGuard session is not established");
+  }
+  return LwipUdpSocket::connect(server_address_, port);
+}
+
 bool TailcatClientDataPlane::pump_for(std::chrono::milliseconds timeout) {
   if (timeout.count() < 0) throw std::invalid_argument("negative Tailcat pump timeout");
   const auto packet = wireguard_.pump_for(timeout);
@@ -199,6 +207,11 @@ TailcatServerDataPlane::~TailcatServerDataPlane() = default;
 
 std::shared_ptr<LwipTcpListener> TailcatServerDataPlane::listen(std::uint16_t port) {
   return impl_->stack.listen(port);
+}
+
+std::shared_ptr<LwipUdpSocket> TailcatServerDataPlane::bind_udp(
+    std::uint16_t port) {
+  return LwipUdpSocket::bind(port);
 }
 
 bool TailcatServerDataPlane::pump_for(std::chrono::milliseconds timeout) {
