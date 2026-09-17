@@ -27,22 +27,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_sodium)
 
-# lwIP is the userspace TCP/IP stack. The WireGuard dependency includes lwIP
-# types in its public C header even when only its protocol core is compiled, so
-# fetch both now; the full lwIP source list is wired into the data plane later.
+# lwIP is the userspace TCP/IP stack. Fetch it source-only: its upstream root
+# CMake project builds example applications that Tailcat neither needs nor uses.
 FetchContent_Declare(
   tailcat_lwip
   GIT_REPOSITORY https://github.com/lwip-tcpip/lwip.git
   GIT_TAG 77dcd25a72509eb83f72b033d219b1d40cd8eb95
   GIT_SHALLOW FALSE
+  SOURCE_SUBDIR _tailcat_source_only
 )
 FetchContent_MakeAvailable(tailcat_lwip)
 
+# wireguard-lwip is likewise consumed as selected C sources, not as an external
+# executable or network interface.
 FetchContent_Declare(
   tailcat_wireguard_src
   GIT_REPOSITORY https://github.com/smartalock/wireguard-lwip.git
   GIT_TAG c54f20dbe76ac8b3411ad21e0ed7deea6f0cfd4d
   GIT_SHALLOW FALSE
+  SOURCE_SUBDIR _tailcat_source_only
 )
 FetchContent_MakeAvailable(tailcat_wireguard_src)
 
