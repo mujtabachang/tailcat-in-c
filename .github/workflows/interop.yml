@@ -141,14 +141,28 @@ jobs:
           chmod +x ./cpp-tailcat
           rm -rf cpp-cpp-address-artifact
           for _ in $(seq 1 180); do
-            if gh run download "$GITHUB_RUN_ID" -n cpp-cpp-server-address -D cpp-cpp-address-artifact 2>/dev/null; then
+            artifact_id=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              | jq -r '.artifacts[] | select(.name == "cpp-cpp-server-address") | .id' \
+              | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p cpp-cpp-address-artifact
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o cpp-cpp-address.zip
+              unzip -qo cpp-cpp-address.zip -d cpp-cpp-address-artifact
               test -s cpp-cpp-address-artifact/cpp-cpp-address.txt
               addr=$(cat cpp-cpp-address-artifact/cpp-cpp-address.txt)
               echo "::add-mask::$addr"
               echo "Received C++ server address from separate runner"
               exit 0
             fi
-            rm -rf cpp-cpp-address-artifact
             sleep 1
           done
           echo "Timed out waiting for C++ server address artifact" >&2
@@ -295,14 +309,28 @@ jobs:
           chmod +x ./go-tailcat
           rm -rf cpp-go-address-artifact
           for _ in $(seq 1 180); do
-            if gh run download "$GITHUB_RUN_ID" -n cpp-go-server-address -D cpp-go-address-artifact 2>/dev/null; then
+            artifact_id=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              | jq -r '.artifacts[] | select(.name == "cpp-go-server-address") | .id' \
+              | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p cpp-go-address-artifact
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o cpp-go-address.zip
+              unzip -qo cpp-go-address.zip -d cpp-go-address-artifact
               test -s cpp-go-address-artifact/cpp-go-address.txt
               addr=$(cat cpp-go-address-artifact/cpp-go-address.txt)
               echo "::add-mask::$addr"
               echo "Received C++ server address for Go client"
               exit 0
             fi
-            rm -rf cpp-go-address-artifact
             sleep 1
           done
           echo "Timed out waiting for C++ server address artifact" >&2
@@ -406,14 +434,28 @@ jobs:
           chmod +x ./cpp-tailcat
           rm -rf go-cpp-address-artifact
           for _ in $(seq 1 180); do
-            if gh run download "$GITHUB_RUN_ID" -n go-cpp-server-address -D go-cpp-address-artifact 2>/dev/null; then
+            artifact_id=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              | jq -r '.artifacts[] | select(.name == "go-cpp-server-address") | .id' \
+              | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p go-cpp-address-artifact
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o go-cpp-address.zip
+              unzip -qo go-cpp-address.zip -d go-cpp-address-artifact
               test -s go-cpp-address-artifact/go-cpp-address.txt
               addr=$(cat go-cpp-address-artifact/go-cpp-address.txt)
               echo "::add-mask::$addr"
               echo "Received Go server address for C++ client"
               exit 0
             fi
-            rm -rf go-cpp-address-artifact
             sleep 1
           done
           echo "Timed out waiting for Go server address artifact" >&2
