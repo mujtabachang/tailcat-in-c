@@ -14,6 +14,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
 include(FetchContent)
+
+# DERP authentication uses the same X25519 + XSalsa20-Poly1305 NaCl box
+# construction as tailscale/types/key. Build libsodium natively on every OS.
 set(SODIUM_DISABLE_TESTS ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
   tailcat_sodium
@@ -23,17 +26,47 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_sodium)
 
+# libcurl is used only as a verified TLS carrier in CONNECT_ONLY mode. Tailcat
+# itself writes the HTTP upgrade bytes and implements the DERP protocol.
+find_package(CURL QUIET)
+if(NOT CURL_FOUND)
+  set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_TESTS ON CACHE BOOL "" FORCE)
+  set(CURL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+  set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+  set(CURL_ZLIB OFF CACHE STRING "" FORCE)
+  set(CURL_BROTLI OFF CACHE STRING "" FORCE)
+  set(CURL_ZSTD OFF CACHE STRING "" FORCE)
+  set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+  set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
+  if(WIN32)
+    set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
+  else()
+    set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)
+  endif()
+  FetchContent_Declare(
+    tailcat_curl
+    GIT_REPOSITORY https://github.com/curl/curl.git
+    GIT_TAG c427e91ddea7c1d4b2f5c54ab4b6810f61483928
+    GIT_SHALLOW FALSE
+  )
+  FetchContent_MakeAvailable(tailcat_curl)
+endif()
+
 add_library(tailcat_core
     src/cli.cpp
     src/platform.cpp
     src/protocol.cpp
     src/crypto.cpp
     src/derp.cpp
+    src/derp_http.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
