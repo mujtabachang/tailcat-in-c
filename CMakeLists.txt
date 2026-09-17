@@ -27,6 +27,49 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_sodium)
 
+# lwIP is the userspace TCP/IP stack. The WireGuard dependency includes lwIP
+# types in its public C header even when only its protocol core is compiled, so
+# fetch both now; the full lwIP source list is wired into the data plane later.
+FetchContent_Declare(
+  tailcat_lwip
+  GIT_REPOSITORY https://github.com/lwip-tcpip/lwip.git
+  GIT_TAG 77dcd25a72509eb83f72b033d219b1d40cd8eb95
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_lwip)
+
+FetchContent_Declare(
+  tailcat_wireguard_src
+  GIT_REPOSITORY https://github.com/smartalock/wireguard-lwip.git
+  GIT_TAG c54f20dbe76ac8b3411ad21e0ed7deea6f0cfd4d
+  GIT_SHALLOW FALSE
+)
+FetchContent_MakeAvailable(tailcat_wireguard_src)
+
+add_library(tailcat_wireguard STATIC
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/wireguard.c
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/crypto/refc/blake2s.c
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/crypto/refc/chacha20.c
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/crypto/refc/chacha20poly1305.c
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/crypto/refc/poly1305-donna.c
+    ${tailcat_wireguard_src_SOURCE_DIR}/src/crypto/refc/x25519.c
+    src/wireguard_crypto_port.c
+    src/wireguard_platform.cpp
+)
+set_target_properties(tailcat_wireguard PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(tailcat_wireguard PRIVATE c_std_11 cxx_std_20)
+target_include_directories(tailcat_wireguard
+  PUBLIC
+    ${tailcat_wireguard_src_SOURCE_DIR}/src
+    ${tailcat_lwip_SOURCE_DIR}/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip_port
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(tailcat_wireguard PUBLIC sodium)
+if(MSVC)
+  target_compile_options(tailcat_wireguard PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/tailcat/wireguard_compat.h")
+endif()
+
 # DERP map parsing only; header-only and pinned for reproducible builds.
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
 set(JSON_Install OFF CACHE BOOL "" FORCE)
@@ -77,11 +120,12 @@ add_library(tailcat_core STATIC
     src/derp_http.cpp
     src/derp_map.cpp
     src/rendezvous.cpp
+    src/wireguard_engine.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
@@ -117,5 +161,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_rendezvous_tests tests/rendezvous_test.cpp)
     target_link_libraries(tailcat_rendezvous_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_rendezvous COMMAND tailcat_rendezvous_tests)
+
+    add_executable(tailcat_wireguard_tests tests/wireguard_test.cpp)
+    target_link_libraries(tailcat_wireguard_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_wireguard COMMAND tailcat_wireguard_tests)
   endif()
 endif()
