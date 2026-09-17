@@ -24,9 +24,13 @@ int main() {
   assert(loaded.preshared_key == original.preshared_key);
   assert(loaded.region_id == 7);
 
-  std::ifstream input(path, std::ios::binary);
-  const std::string json((std::istreambuf_iterator<char>(input)),
-                         std::istreambuf_iterator<char>());
+  std::string json;
+  {
+    std::ifstream input(path, std::ios::binary);
+    assert(input.good());
+    json.assign(std::istreambuf_iterator<char>(input),
+                std::istreambuf_iterator<char>());
+  }
   assert(json.find("privkey:") != std::string::npos);
   assert(json.find("nodekey:") != std::string::npos);
   assert(json.find("discokey:") != std::string::npos);
