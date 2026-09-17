@@ -173,7 +173,13 @@ FetchContent_Declare(
 FetchContent_GetProperties(tailcat_libssh)
 if(NOT tailcat_libssh_POPULATED)
   FetchContent_Populate(tailcat_libssh)
+  # Tailcat statically consumes libssh. Suppress only libssh's install/export
+  # rules while processing its subdirectory so an in-tree crypto backend is
+  # not required to participate in a public CMake export set. Re-enable install
+  # rules immediately afterward for Tailcat's own executable.
+  set(CMAKE_SKIP_INSTALL_RULES TRUE)
   add_subdirectory(${tailcat_libssh_SOURCE_DIR} ${tailcat_libssh_BINARY_DIR} EXCLUDE_FROM_ALL)
+  set(CMAKE_SKIP_INSTALL_RULES FALSE)
 endif()
 
 add_library(tailcat_core STATIC
