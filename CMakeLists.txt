@@ -75,6 +75,7 @@ add_library(tailcat_core
     src/derp.cpp
     src/derp_http.cpp
     src/derp_map.cpp
+    src/rendezvous.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
@@ -111,5 +112,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_derp COMMAND tailcat_derp_tests)
+
+    add_executable(tailcat_rendezvous_tests tests/rendezvous_test.cpp)
+    target_link_libraries(tailcat_rendezvous_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_rendezvous COMMAND tailcat_rendezvous_tests)
   endif()
 endif()

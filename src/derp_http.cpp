@@ -5,18 +5,23 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace tailcat {
 namespace {
+
+using Clock = std::chrono::steady_clock;
 
 void curl_global_once() {
   static std::once_flag once;
@@ -37,6 +42,7 @@ struct DerpHttpClient::Impl {
   CURL* curl = nullptr;
   Key32 server_public{};
   bool is_connected = false;
+  std::vector<std::uint8_t> receive_buffer;
 
   Impl(DerpNode n, NodeKeyPair i, std::string app)
       : node(std::move(n)), identity(std::move(i)), app_name(std::move(app)) {}
@@ -44,7 +50,7 @@ struct DerpHttpClient::Impl {
   ~Impl() { close(); }
 
   std::uint16_t port() const {
-    if (node.derp_port <= 0) return 443U;
+    if (node.derp_port <= 0) return node.insecure_for_tests ? 80U : 443U;
     if (node.derp_port > 65535) throw std::runtime_error("invalid DERP port");
     return static_cast<std::uint16_t>(node.derp_port);
   }
@@ -57,11 +63,13 @@ struct DerpHttpClient::Impl {
   std::string authority() const {
     const auto h = host();
     const auto p = port();
-    return p == 443U ? h : h + ":" + std::to_string(p);
+    const auto default_port = node.insecure_for_tests ? 80U : 443U;
+    return p == default_port ? h : h + ":" + std::to_string(p);
   }
 
   void close() noexcept {
     is_connected = false;
+    receive_buffer.clear();
     if (curl != nullptr) {
       curl_easy_cleanup(curl);
       curl = nullptr;
@@ -99,34 +107,66 @@ struct DerpHttpClient::Impl {
     send_all(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
   }
 
-  void recv_exact(std::uint8_t* out, std::size_t size) {
-    std::size_t got = 0;
-    while (got < size) {
+  std::optional<DerpFrame> take_buffered_frame() {
+    constexpr std::size_t header_size = 5U;
+    constexpr std::uint32_t max_frame_size = 10U * 1024U * 1024U;
+    if (receive_buffer.size() < header_size) return std::nullopt;
+
+    const std::uint32_t len = (static_cast<std::uint32_t>(receive_buffer[1]) << 24U) |
+                              (static_cast<std::uint32_t>(receive_buffer[2]) << 16U) |
+                              (static_cast<std::uint32_t>(receive_buffer[3]) << 8U) |
+                              static_cast<std::uint32_t>(receive_buffer[4]);
+    if (len > max_frame_size) throw std::runtime_error("DERP frame exceeds safety limit");
+    const auto payload_size = static_cast<std::size_t>(len);
+    if (payload_size > std::numeric_limits<std::size_t>::max() - header_size) {
+      throw std::runtime_error("DERP frame length overflow");
+    }
+    const auto frame_size = header_size + payload_size;
+    if (receive_buffer.size() < frame_size) return std::nullopt;
+
+    DerpFrame frame;
+    frame.type = static_cast<DerpFrameType>(receive_buffer[0]);
+    frame.payload.assign(receive_buffer.begin() + static_cast<std::ptrdiff_t>(header_size),
+                         receive_buffer.begin() + static_cast<std::ptrdiff_t>(frame_size));
+    receive_buffer.erase(receive_buffer.begin(),
+                         receive_buffer.begin() + static_cast<std::ptrdiff_t>(frame_size));
+    return frame;
+  }
+
+  bool receive_some(std::optional<Clock::time_point> deadline) {
+    std::array<std::uint8_t, 16U * 1024U> temp{};
+    for (;;) {
       std::size_t n = 0;
-      const auto rc = curl_easy_recv(curl, out + got, size - got, &n);
-      if (rc == CURLE_AGAIN) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        continue;
+      const auto rc = curl_easy_recv(curl, temp.data(), temp.size(), &n);
+      if (rc == CURLE_OK) {
+        if (n == 0U) throw std::runtime_error("DERP TLS connection closed while reading");
+        receive_buffer.insert(receive_buffer.end(), temp.begin(),
+                              temp.begin() + static_cast<std::ptrdiff_t>(n));
+        return true;
       }
-      if (rc != CURLE_OK) throw std::runtime_error("DERP TLS receive failed: " + curl_error(rc));
-      if (n == 0U) throw std::runtime_error("DERP TLS connection closed while reading");
-      got += n;
+      if (rc != CURLE_AGAIN) {
+        throw std::runtime_error("DERP TLS receive failed: " + curl_error(rc));
+      }
+      if (deadline && Clock::now() >= *deadline) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  }
+
+  std::optional<DerpFrame> read_frame_for(std::chrono::milliseconds timeout) {
+    if (timeout.count() < 0) throw std::invalid_argument("negative DERP frame timeout");
+    const auto deadline = Clock::now() + timeout;
+    for (;;) {
+      if (auto frame = take_buffered_frame()) return frame;
+      if (Clock::now() >= deadline) return std::nullopt;
+      if (!receive_some(deadline)) return std::nullopt;
     }
   }
 
   DerpFrame read_frame() {
-    std::array<std::uint8_t, 5> header{};
-    recv_exact(header.data(), header.size());
-    const std::uint32_t len = (static_cast<std::uint32_t>(header[1]) << 24U) |
-                              (static_cast<std::uint32_t>(header[2]) << 16U) |
-                              (static_cast<std::uint32_t>(header[3]) << 8U) |
-                              static_cast<std::uint32_t>(header[4]);
-    if (len > 10U * 1024U * 1024U) throw std::runtime_error("DERP frame exceeds safety limit");
-    DerpFrame frame;
-    frame.type = static_cast<DerpFrameType>(header[0]);
-    frame.payload.resize(static_cast<std::size_t>(len));
-    if (!frame.payload.empty()) recv_exact(frame.payload.data(), frame.payload.size());
-    return frame;
+    for (;;) {
+      if (auto frame = take_buffered_frame()) return std::move(*frame);
+      (void)receive_some(std::nullopt);
+    }
   }
 
   void write_frame(DerpFrameType type, const std::vector<std::uint8_t>& payload) {
@@ -161,13 +201,17 @@ struct DerpHttpClient::Impl {
       send_text(request);
 
       const auto greeting = read_frame();
-      if (greeting.type != DerpFrameType::ServerKey) throw std::runtime_error("DERP server did not send ServerKey first");
+      if (greeting.type != DerpFrameType::ServerKey) {
+        throw std::runtime_error("DERP server did not send ServerKey first");
+      }
       server_public = parse_derp_server_key(greeting.payload);
 
       write_frame(DerpFrameType::ClientInfo,
                   make_derp_client_info(identity, server_public, app_name, true));
       const auto info = read_frame();
-      if (info.type != DerpFrameType::ServerInfo) throw std::runtime_error("DERP server did not send ServerInfo after ClientInfo");
+      if (info.type != DerpFrameType::ServerInfo) {
+        throw std::runtime_error("DERP server did not send ServerInfo after ClientInfo");
+      }
       (void)open_derp_server_info(identity, server_public, info.payload);
       is_connected = true;
     } catch (...) {
@@ -192,7 +236,8 @@ const Key32& DerpHttpClient::server_public_key() const {
   return impl_->server_public;
 }
 
-void DerpHttpClient::send_packet(const Key32& destination, const std::vector<std::uint8_t>& packet) {
+void DerpHttpClient::send_packet(const Key32& destination,
+                                 const std::vector<std::uint8_t>& packet) {
   if (!impl_->is_connected) throw std::runtime_error("DERP client is not connected");
   impl_->write_frame(DerpFrameType::SendPacket, make_derp_send_packet(destination, packet));
 }
@@ -201,6 +246,11 @@ void DerpHttpClient::send_pong(const std::array<std::uint8_t, 8>& value) {
   if (!impl_->is_connected) throw std::runtime_error("DERP client is not connected");
   const std::vector<std::uint8_t> payload(value.begin(), value.end());
   impl_->write_frame(DerpFrameType::Pong, payload);
+}
+
+std::optional<DerpFrame> DerpHttpClient::receive_for(std::chrono::milliseconds timeout) {
+  if (!impl_->is_connected) throw std::runtime_error("DERP client is not connected");
+  return impl_->read_frame_for(timeout);
 }
 
 DerpFrame DerpHttpClient::receive() {
