@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace tailcat {
@@ -34,5 +35,6 @@ void delete_saved_tailcat_key(const std::string& name_or_path);
 
 // Typed text forms used by upstream Tailcat and its --allow flag.
 std::string node_public_text(const Key32& key);
+Key32 parse_node_public_text(std::string_view text);
 
 }  // namespace tailcat
