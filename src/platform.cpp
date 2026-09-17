@@ -13,9 +13,9 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
-#include <shellapi.h>
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
+#include <shellapi.h>
 #else
 #include <sys/types.h>
 #include <unistd.h>
