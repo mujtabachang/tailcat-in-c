@@ -158,6 +158,10 @@ std::string node_public_text(const Key32& key) {
   return hex_key("nodekey:", key);
 }
 
+Key32 parse_node_public_text(std::string_view text) {
+  return parse_key(text, "nodekey:");
+}
+
 SavedTailcatKey load_saved_tailcat_key(const std::string& path_or_name) {
   const auto path = resolve_tailcat_key_path(path_or_name);
   std::ifstream input(path, std::ios::binary);
