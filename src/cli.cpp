@@ -8,13 +8,13 @@
 #include "tailcat/derp_map.hpp"
 #include "tailcat/extra_commands.hpp"
 #include "tailcat/forward_command.hpp"
+#include "tailcat/host_tcp.hpp"
 #include "tailcat/platform.hpp"
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/rendezvous.hpp"
 #include "tailcat/ssh_command.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -108,25 +108,22 @@ struct InputState {
   std::mutex mutex;
   std::deque<std::vector<std::uint8_t>> chunks;
   bool done = false;
+  std::string error;
 };
 
 std::shared_ptr<InputState> start_stdin_reader() {
   auto state = std::make_shared<InputState>();
   std::thread([state] {
-    std::array<char, 16 * 1024> buffer{};
-    for (;;) {
-      std::cin.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-      const auto count = std::cin.gcount();
-      if (count > 0) {
-        std::vector<std::uint8_t> chunk(static_cast<std::size_t>(count));
-        for (std::streamsize i = 0; i < count; ++i) {
-          chunk[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(
-              static_cast<unsigned char>(buffer[static_cast<std::size_t>(i)]));
-        }
+    try {
+      for (;;) {
+        auto chunk = read_stdin_some();
+        if (chunk.empty()) break;
         std::lock_guard<std::mutex> lock(state->mutex);
         state->chunks.push_back(std::move(chunk));
       }
-      if (count == 0 || std::cin.eof() || std::cin.bad()) break;
+    } catch (const std::exception& e) {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->error = e.what();
     }
     std::lock_guard<std::mutex> lock(state->mutex);
     state->done = true;
@@ -140,6 +137,7 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
     throw std::invalid_argument(
         "connect accepts at most one TCP port argument");
   }
+  prepare_binary_stdio();
   const auto port =
       args.empty() ? static_cast<std::uint16_t>(1U) : parse_port(args[0]);
   auto info = parse_tailcat_addr(address);
@@ -181,16 +179,15 @@ int run_client(std::string_view address, const std::vector<std::string>& args,
     }
 
     const auto received = stream->read_available();
-    if (!received.empty()) {
-      std::cout.write(reinterpret_cast<const char*>(received.data()),
-                      static_cast<std::streamsize>(received.size()));
-      std::cout.flush();
-    }
+    if (!received.empty()) write_stdout_all(received);
 
     if (pending_offset == pending.size()) {
       pending.clear();
       pending_offset = 0U;
       std::lock_guard<std::mutex> lock(input->mutex);
+      if (!input->error.empty()) {
+        throw std::runtime_error(input->error);
+      }
       if (!input->chunks.empty()) {
         pending = std::move(input->chunks.front());
         input->chunks.pop_front();
@@ -282,6 +279,7 @@ void log_server_address(const ServerBootstrap& server, bool verbose) {
 }
 
 int run_default_server(bool verbose) {
+  prepare_binary_stdio();
   auto server = make_server_bootstrap(true);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
   derp.connect();
@@ -299,11 +297,7 @@ int run_default_server(bool verbose) {
     }
 
     const auto received = stream->read_available();
-    if (!received.empty()) {
-      std::cout.write(reinterpret_cast<const char*>(received.data()),
-                      static_cast<std::streamsize>(received.size()));
-      std::cout.flush();
-    }
+    if (!received.empty()) write_stdout_all(received);
     if (stream->eof()) {
       stream->close();
       listener->close();
@@ -314,6 +308,7 @@ int run_default_server(bool verbose) {
 
 int run_serve(const std::vector<std::string>& args, bool verbose) {
   bool use_psk = true;
+  bool ssh_service = false;
   std::vector<std::uint16_t> ports;
   for (const auto& arg : args) {
     if (arg == "--psk=false") {
@@ -321,6 +316,7 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
     } else if (arg == "--psk=true") {
       use_psk = true;
     } else if (arg == "ssh") {
+      ssh_service = true;
       ports.push_back(22U);
     } else if (!arg.empty() && arg[0] == '-') {
       throw std::invalid_argument("unsupported serve option: " + arg);
@@ -332,6 +328,17 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
     throw std::invalid_argument("serve requires ssh or one or more TCP ports");
   }
 
+  if (ssh_service) {
+    try {
+      auto probe = HostTcpStream::connect("127.0.0.1", 22U);
+      probe->close();
+    } catch (const std::exception& e) {
+      throw std::runtime_error(
+          std::string("serve ssh requires a local SSH server on 127.0.0.1:22: ") +
+          e.what());
+    }
+  }
+
   auto server = make_server_bootstrap(use_psk);
   DerpHttpClient derp(server.node, server.identity, "tailcat");
   derp.connect();
@@ -340,7 +347,7 @@ int run_serve(const std::vector<std::string>& args, bool verbose) {
   log_server_address(server, verbose);
   if (verbose) {
     for (const auto port : forwarding.ports()) {
-      if (port == 22U) {
+      if (port == 22U && ssh_service) {
         std::cerr << "# serving SSH -> 127.0.0.1:22\n";
       } else {
         std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port
