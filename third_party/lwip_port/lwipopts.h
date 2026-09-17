@@ -1,15 +1,18 @@
 #pragma once
 
-/* Tailcat runs lwIP entirely in-process without an OS networking thread. */
+/* Tailcat runs one lwIP instance entirely in-process without an OS networking
+ * thread. Tailcat's peer network is IPv6-only; host-side forwarding can still
+ * target IPv4 using normal host sockets outside this userspace stack.
+ */
 #define NO_SYS 1
 #define SYS_LIGHTWEIGHT_PROT 0
 
-#define LWIP_IPV4 1
+#define LWIP_IPV4 0
 #define LWIP_IPV6 1
 #define LWIP_TCP 1
 #define LWIP_UDP 1
 #define LWIP_RAW 1
-#define LWIP_ICMP 1
+#define LWIP_ICMP 0
 #define LWIP_ICMP6 1
 
 #define LWIP_NETCONN 0
@@ -18,6 +21,7 @@
 #define LWIP_DHCP 0
 #define LWIP_AUTOIP 0
 #define LWIP_IPV6_DHCP6 0
+#define LWIP_IPV6_MLD 0
 
 #define MEM_ALIGNMENT 8
 #define MEM_SIZE (256 * 1024)
@@ -31,10 +35,8 @@
 #define TCP_SND_QUEUELEN 64
 
 #define LWIP_CHECKSUM_CTRL_PER_NETIF 0
-#define CHECKSUM_GEN_IP 1
 #define CHECKSUM_GEN_UDP 1
 #define CHECKSUM_GEN_TCP 1
-#define CHECKSUM_CHECK_IP 1
 #define CHECKSUM_CHECK_UDP 1
 #define CHECKSUM_CHECK_TCP 1
 

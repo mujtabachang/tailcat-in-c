@@ -39,18 +39,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(tailcat_lwip)
 
-# Build the lwIP protocol core under Tailcat's NO_SYS=1 configuration. No OS
-# socket backend, TAP/TUN port, examples, DHCP client, or lwIP socket API is
-# used: decrypted WireGuard IP packets are injected directly into this stack.
+# Build only lwIP's protocol core and IPv6 implementation under Tailcat's
+# NO_SYS=1 configuration. Tailcat virtual addresses are IPv6, while host-side
+# forward targets remain ordinary host sockets and can still be IPv4.
 set(LWIP_DIR ${tailcat_lwip_SOURCE_DIR})
+set(LWIP_EXCLUDE_SLIPIF TRUE)
 include(${LWIP_DIR}/src/Filelists.cmake)
 add_library(tailcat_lwip_stack STATIC
     ${lwipcore_SRCS}
-    ${lwipcore4_SRCS}
     ${lwipcore6_SRCS}
     src/lwip_platform.cpp
 )
 set_target_properties(tailcat_lwip_stack PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(tailcat_lwip_stack PRIVATE c_std_11)
 target_include_directories(tailcat_lwip_stack
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lwip_port
@@ -146,11 +147,12 @@ add_library(tailcat_core STATIC
     src/rendezvous.cpp
     src/wireguard_engine.cpp
     src/wireguard_derp.cpp
+    src/lwip_stack.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
-target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard)
+target_link_libraries(tailcat_core PUBLIC sodium CURL::libcurl nlohmann_json::nlohmann_json tailcat_wireguard tailcat_lwip_stack)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
@@ -186,6 +188,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_lwip_tests tests/lwip_test.cpp)
     target_link_libraries(tailcat_lwip_tests PRIVATE tailcat_lwip_stack)
     add_test(NAME tailcat_lwip COMMAND tailcat_lwip_tests)
+
+    add_executable(tailcat_lwip_tcp_tests tests/lwip_stack_test.cpp)
+    target_link_libraries(tailcat_lwip_tcp_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_lwip_tcp COMMAND tailcat_lwip_tcp_tests)
 
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
