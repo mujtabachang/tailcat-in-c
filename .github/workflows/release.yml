@@ -1,6 +1,10 @@
 name: release
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
   workflow_dispatch:
     inputs:
       version:
@@ -14,7 +18,7 @@ on:
         type: boolean
 
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ github.event_name }}-${{ github.run_number }}-${{ inputs.version }}
   cancel-in-progress: false
 
 permissions:
@@ -24,6 +28,9 @@ jobs:
   validate:
     name: Validate release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Require main branch
         shell: bash
@@ -33,15 +40,27 @@ jobs:
             exit 1
           fi
 
-      - name: Validate semantic version
+      - name: Resolve release metadata
+        id: meta
         shell: bash
         env:
-          VERSION: ${{ inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            VERSION="0.1.0-dev.${GITHUB_RUN_NUMBER}"
+            PRERELEASE=true
+          else
+            VERSION="${INPUT_VERSION}"
+            PRERELEASE="${INPUT_PRERELEASE}"
+          fi
           if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid version '${VERSION}'. Use a version such as 0.1.0 or 0.2.0-rc.1."
             exit 1
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         with:
@@ -50,7 +69,7 @@ jobs:
       - name: Require a new tag
         shell: bash
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
             echo "Tag v${VERSION} already exists."
@@ -85,7 +104,7 @@ jobs:
 
       - name: Configure
         shell: bash
-        run: cmake --preset "${{ matrix.preset }}" -DTAILCAT_VERSION="${{ inputs.version }}"
+        run: cmake --preset "${{ matrix.preset }}" -DTAILCAT_VERSION="${{ needs.validate.outputs.version }}"
 
       - name: Build
         shell: bash
@@ -103,7 +122,7 @@ jobs:
         shell: bash
         run: |
           "dist/${{ matrix.artifact }}/bin/${{ matrix.executable }}" --version | tee version.txt
-          grep -F "tailcat ${{ inputs.version }}" version.txt
+          grep -F "tailcat ${{ needs.validate.outputs.version }}" version.txt
 
       - name: Upload native artifact
         uses: actions/upload-artifact@v4
@@ -115,7 +134,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [validate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -141,7 +160,7 @@ jobs:
       - name: Package artifacts and checksums
         shell: bash
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           tar -C release-assets/tailcat-linux-x86_64/bin \
@@ -162,8 +181,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
           set -euo pipefail
           assets=(
