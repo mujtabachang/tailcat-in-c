@@ -131,6 +131,7 @@ add_library(tailcat_core STATIC
     src/protocol.cpp
     src/ip.cpp
     src/crypto.cpp
+    src/saved_key.cpp
     src/derp.cpp
     src/derp_http.cpp
     src/derp_map.cpp
@@ -156,7 +157,7 @@ endif()
 
 if(WIN32)
   target_compile_definitions(tailcat_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(tailcat_core PUBLIC ws2_32)
+  target_link_libraries(tailcat_core PUBLIC ws2_32 shell32)
 endif()
 
 add_executable(tailcat src/main.cpp)
@@ -214,6 +215,10 @@ if(TAILCAT_BUILD_TESTS)
     target_link_libraries(tailcat_ssh_command_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_ssh_command COMMAND tailcat_ssh_command_tests)
 
+    add_executable(tailcat_saved_key_tests tests/saved_key_test.cpp)
+    target_link_libraries(tailcat_saved_key_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_saved_key COMMAND tailcat_saved_key_tests)
+
     set(TAILCAT_TEST_TARGETS
       tailcat_tests
       tailcat_protocol_tests
@@ -227,6 +232,7 @@ if(TAILCAT_BUILD_TESTS)
       tailcat_data_plane_tests
       tailcat_host_tcp_tests
       tailcat_ssh_command_tests
+      tailcat_saved_key_tests
     )
     foreach(test_target IN LISTS TAILCAT_TEST_TARGETS)
       if(MSVC)
