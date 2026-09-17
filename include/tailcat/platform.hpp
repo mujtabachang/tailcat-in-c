@@ -21,4 +21,8 @@ void prepare_binary_stdio();
 std::vector<std::uint8_t> read_stdin_some(std::size_t max_bytes = 16U * 1024U);
 void write_stdout_all(std::span<const std::uint8_t> data);
 
+// Opens a URL using the desktop's default handler without blocking Tailcat's
+// forwarding loop.
+void open_system_url(const std::string& url);
+
 }  // namespace tailcat
