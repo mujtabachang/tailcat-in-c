@@ -122,10 +122,6 @@ if(NOT CURL_FOUND)
   FetchContent_MakeAvailable(tailcat_curl)
 endif()
 
-# Upstream Tailcat terminates SSH inside the Tailcat process rather than
-# forwarding port 22 to a host sshd. libssh is the native C server/SFTP layer
-# used by this rewrite. Keep optional integrations disabled so releases have a
-# small, deterministic SSH dependency surface.
 set(WITH_GSSAPI OFF CACHE BOOL "" FORCE)
 set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
 set(WITH_SFTP ON CACHE BOOL "" FORCE)
@@ -145,9 +141,6 @@ set(GSSAPI_TESTING OFF CACHE BOOL "" FORCE)
 set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
 
-# GitHub's MinGW Windows image does not ship OpenSSL development files. Pin
-# Mbed TLS and let libssh use it as its crypto backend there. Linux/macOS keep
-# the platform OpenSSL already available on their build images.
 if(WIN32)
   set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
@@ -171,12 +164,6 @@ else()
   set(WITH_MBEDTLS OFF CACHE BOOL "" FORCE)
 endif()
 
-# Add libssh as an excluded subdirectory instead of using MakeAvailable's
-# ordinary add_subdirectory call. Tailcat statically consumes libssh; it does
-# not install libssh as a separate SDK. EXCLUDE_FROM_ALL also keeps libssh's
-# install/export rules out of Tailcat's install tree, avoiding a CMake export
-# failure on Windows where the in-tree mbedcrypto target is intentionally not
-# installed.
 FetchContent_Declare(
   tailcat_libssh
   GIT_REPOSITORY https://github.com/libssh/libssh-mirror.git
@@ -196,6 +183,7 @@ add_library(tailcat_core STATIC
     src/extra_commands.cpp
     src/forward_command.cpp
     src/socks_command.cpp
+    src/ssh_authorized_keys.cpp
     src/ssh_command.cpp
     src/platform.cpp
     src/protocol.cpp
@@ -235,10 +223,6 @@ endif()
 
 add_executable(tailcat src/main.cpp)
 target_link_libraries(tailcat PRIVATE tailcat_core)
-# GitHub's Windows preset uses MinGW. Link its GCC/C++/pthread runtimes into
-# tailcat so the released tailcat.exe does not depend on DLLs from the runner's
-# toolchain directory. Windows system DLLs (Schannel, Winsock, DNS, shell32)
-# remain ordinary platform dependencies.
 if(MINGW)
   target_link_options(tailcat PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
@@ -303,6 +287,10 @@ if(TAILCAT_BUILD_TESTS)
     target_link_libraries(tailcat_ssh_command_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_ssh_command COMMAND tailcat_ssh_command_tests)
 
+    add_executable(tailcat_ssh_authorized_keys_tests tests/ssh_authorized_keys_test.cpp)
+    target_link_libraries(tailcat_ssh_authorized_keys_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_ssh_authorized_keys COMMAND tailcat_ssh_authorized_keys_tests)
+
     add_executable(tailcat_saved_key_tests tests/saved_key_test.cpp)
     target_link_libraries(tailcat_saved_key_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_saved_key COMMAND tailcat_saved_key_tests)
@@ -326,6 +314,7 @@ if(TAILCAT_BUILD_TESTS)
       tailcat_data_plane_tests
       tailcat_host_tcp_tests
       tailcat_ssh_command_tests
+      tailcat_ssh_authorized_keys_tests
       tailcat_saved_key_tests
       tailcat_socks_command_tests
     )
