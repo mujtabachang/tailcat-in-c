@@ -8,6 +8,7 @@
 #include "tailcat/forward_command.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/saved_key.hpp"
+#include "tailcat/socks_command.hpp"
 #include "tailcat/ssh_command.hpp"
 
 #include <algorithm>
@@ -206,6 +207,7 @@ std::optional<int> run_extra_command(std::string_view command,
   if (command == "cp") return run_scp_command(args, verbose, key_name);
   if (command == "browse") return run_browse_command(args, verbose);
   if (command == "resolve") return run_resolve(args);
+  if (command == "socks") return run_socks_command(args, verbose, key_name);
   if (command == "genkey") return run_genkey(args);
   if (command == "printpub") {
     if (!args.empty()) throw std::invalid_argument("printpub takes no positional arguments");
