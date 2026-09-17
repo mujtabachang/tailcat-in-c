@@ -148,6 +148,7 @@ add_library(tailcat_core STATIC
     src/wireguard_engine.cpp
     src/wireguard_derp.cpp
     src/lwip_stack.cpp
+    src/data_plane.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
@@ -208,5 +209,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_wireguard_derp_tests tests/wireguard_derp_test.cpp)
     target_link_libraries(tailcat_wireguard_derp_tests PRIVATE tailcat_core Threads::Threads)
     add_test(NAME tailcat_wireguard_derp COMMAND tailcat_wireguard_derp_tests)
+
+    add_executable(tailcat_data_plane_tests tests/data_plane_test.cpp)
+    target_link_libraries(tailcat_data_plane_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_data_plane COMMAND tailcat_data_plane_tests)
   endif()
 endif()
