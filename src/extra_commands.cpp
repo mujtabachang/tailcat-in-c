@@ -4,6 +4,7 @@
 #include "tailcat/extra_commands.hpp"
 
 #include "tailcat/derp_map.hpp"
+#include "tailcat/forward_command.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/ssh_command.hpp"
 
@@ -34,6 +35,7 @@ std::optional<int> run_extra_command(std::string_view command,
                                      const std::vector<std::string>& args,
                                      bool verbose) {
   if (command == "cp") return run_scp_command(args, verbose);
+  if (command == "browse") return run_browse_command(args, verbose);
   if (command == "resolve") return run_resolve(args);
   return std::nullopt;
 }
