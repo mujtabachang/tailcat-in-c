@@ -16,6 +16,7 @@ option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 add_library(tailcat_core
     src/cli.cpp
     src/platform.cpp
+    src/protocol.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
@@ -43,5 +44,9 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_tests tests/cli_test.cpp)
     target_link_libraries(tailcat_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_cli COMMAND tailcat_tests)
+
+    add_executable(tailcat_protocol_tests tests/protocol_test.cpp)
+    target_link_libraries(tailcat_protocol_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_protocol COMMAND tailcat_protocol_tests)
   endif()
 endif()
