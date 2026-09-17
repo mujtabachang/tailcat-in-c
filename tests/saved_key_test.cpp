@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 
 int main() {
@@ -16,6 +17,7 @@ int main() {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
   const auto path = std::filesystem::temp_directory_path() /
                     ("tailcat-key-" + std::to_string(nonce) + ".json");
+  assert(tailcat::resolve_tailcat_key_path(path.string()) == path.string());
   tailcat::save_tailcat_key(path.string(), original);
 
   const auto loaded = tailcat::load_saved_tailcat_key(path.string());
@@ -23,6 +25,18 @@ int main() {
   assert(loaded.identity.public_key == original.identity.public_key);
   assert(loaded.preshared_key == original.preshared_key);
   assert(loaded.region_id == 7);
+
+  const auto pub = tailcat::node_public_text(loaded.identity.public_key);
+  assert(pub.rfind("nodekey:", 0) == 0);
+  assert(pub.size() == std::string("nodekey:").size() + 64U);
+  assert(tailcat::parse_node_public_text(pub) == loaded.identity.public_key);
+  bool rejected_wrong_type = false;
+  try {
+    (void)tailcat::parse_node_public_text("privkey:0000000000000000000000000000000000000000000000000000000000000000");
+  } catch (const std::invalid_argument&) {
+    rejected_wrong_type = true;
+  }
+  assert(rejected_wrong_type);
 
   std::string json;
   {

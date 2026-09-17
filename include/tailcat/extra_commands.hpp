@@ -12,6 +12,7 @@ namespace tailcat {
 // Returns std::nullopt when command is not handled here.
 std::optional<int> run_extra_command(std::string_view command,
                                      const std::vector<std::string>& args,
-                                     bool verbose);
+                                     bool verbose,
+                                     std::string_view key_name = {});
 
 }  // namespace tailcat

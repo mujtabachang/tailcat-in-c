@@ -257,10 +257,12 @@ std::string ssh_destination_host(std::string_view address) {
 std::string ssh_proxy_command(std::string_view executable,
                               std::string_view address,
                               std::string_view port,
-                              bool verbose) {
+                              bool verbose,
+                              std::string_view key_name) {
   std::vector<std::string> parts;
   parts.emplace_back(executable);
   if (verbose) parts.emplace_back("--verbose");
+  if (!key_name.empty()) parts.emplace_back("--key=" + std::string(key_name));
   parts.emplace_back(address);
   parts.emplace_back(port);
 
@@ -276,7 +278,8 @@ std::string ssh_proxy_command(std::string_view executable,
   return out.str();
 }
 
-int run_ssh_command(const std::vector<std::string>& args, bool verbose) {
+int run_ssh_command(const std::vector<std::string>& args, bool verbose,
+                    std::string_view key_name) {
   const auto parsed = parse_ssh_args(args);
 
   std::string user;
@@ -293,7 +296,7 @@ int run_ssh_command(const std::vector<std::string>& args, bool verbose) {
   (void)parse_tailcat_addr(address);
 
   const auto proxy = ssh_proxy_command(current_executable_path(), address,
-                                       parsed.port, verbose);
+                                       parsed.port, verbose, key_name);
   std::string destination = ssh_destination_host(address);
   if (!user.empty()) destination = user + "@" + destination;
 
@@ -306,7 +309,8 @@ int run_ssh_command(const std::vector<std::string>& args, bool verbose) {
   return exec_program("ssh", ssh_args);
 }
 
-int run_scp_command(const std::vector<std::string>& args, bool verbose) {
+int run_scp_command(const std::vector<std::string>& args, bool verbose,
+                    std::string_view key_name) {
   if (args.size() < 2U) {
     throw std::invalid_argument("cp requires a source and destination");
   }
@@ -354,7 +358,7 @@ int run_scp_command(const std::vector<std::string>& args, bool verbose) {
   }
 
   const auto proxy = ssh_proxy_command(current_executable_path(), remote->address,
-                                       port, verbose);
+                                       port, verbose, key_name);
   std::vector<std::string> scp_args = {"scp"};
   const auto options = ssh_transport_options(proxy);
   scp_args.insert(scp_args.end(), options.begin(), options.end());

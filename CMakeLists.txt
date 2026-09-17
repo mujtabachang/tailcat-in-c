@@ -123,9 +123,11 @@ if(NOT CURL_FOUND)
 endif()
 
 add_library(tailcat_core STATIC
+    src/address_resolver.cpp
     src/cli.cpp
     src/extra_commands.cpp
     src/forward_command.cpp
+    src/socks_command.cpp
     src/ssh_command.cpp
     src/platform.cpp
     src/protocol.cpp
@@ -139,6 +141,7 @@ add_library(tailcat_core STATIC
     src/wireguard_engine.cpp
     src/wireguard_derp.cpp
     src/lwip_stack.cpp
+    src/lwip_udp.cpp
     src/data_plane.cpp
     src/host_tcp.cpp
     src/port_forward.cpp
@@ -157,7 +160,9 @@ endif()
 
 if(WIN32)
   target_compile_definitions(tailcat_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(tailcat_core PUBLIC ws2_32 shell32)
+  target_link_libraries(tailcat_core PUBLIC ws2_32 shell32 dnsapi)
+else()
+  target_link_libraries(tailcat_core PUBLIC resolv)
 endif()
 
 add_executable(tailcat src/main.cpp)
@@ -170,6 +175,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_tests tests/cli_test.cpp)
     target_link_libraries(tailcat_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_cli COMMAND tailcat_tests)
+
+    add_executable(tailcat_address_resolver_tests tests/address_resolver_test.cpp)
+    target_link_libraries(tailcat_address_resolver_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_address_resolver COMMAND tailcat_address_resolver_tests)
 
     add_executable(tailcat_protocol_tests tests/protocol_test.cpp)
     target_link_libraries(tailcat_protocol_tests PRIVATE tailcat_core)
@@ -186,6 +195,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_lwip_tcp_tests tests/lwip_stack_test.cpp)
     target_link_libraries(tailcat_lwip_tcp_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_lwip_tcp COMMAND tailcat_lwip_tcp_tests)
+
+    add_executable(tailcat_lwip_udp_tests tests/lwip_udp_test.cpp)
+    target_link_libraries(tailcat_lwip_udp_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_lwip_udp COMMAND tailcat_lwip_udp_tests)
 
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
@@ -219,12 +232,18 @@ if(TAILCAT_BUILD_TESTS)
     target_link_libraries(tailcat_saved_key_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_saved_key COMMAND tailcat_saved_key_tests)
 
+    add_executable(tailcat_socks_command_tests tests/socks_command_test.cpp)
+    target_link_libraries(tailcat_socks_command_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_socks_command COMMAND tailcat_socks_command_tests)
+
     set(TAILCAT_TEST_TARGETS
       tailcat_tests
+      tailcat_address_resolver_tests
       tailcat_protocol_tests
       tailcat_ip_tests
       tailcat_lwip_tests
       tailcat_lwip_tcp_tests
+      tailcat_lwip_udp_tests
       tailcat_derp_tests
       tailcat_rendezvous_tests
       tailcat_wireguard_tests
@@ -233,6 +252,7 @@ if(TAILCAT_BUILD_TESTS)
       tailcat_host_tcp_tests
       tailcat_ssh_command_tests
       tailcat_saved_key_tests
+      tailcat_socks_command_tests
     )
     foreach(test_target IN LISTS TAILCAT_TEST_TARGETS)
       if(MSVC)

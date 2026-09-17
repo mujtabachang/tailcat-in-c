@@ -6,6 +6,7 @@
 #include "tailcat/derp_transport.hpp"
 #include "tailcat/ip.hpp"
 #include "tailcat/lwip_stack.hpp"
+#include "tailcat/lwip_udp.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/wireguard_derp.hpp"
 #include "tailcat/wireguard_engine.hpp"
@@ -19,7 +20,7 @@
 namespace tailcat {
 
 // Client-side Tailcat data plane: MEOW rendezvous, a WireGuard peer carried by
-// DERP, and one raw-IP lwIP interface exposing TCP streams to the application.
+// DERP, and one raw-IP lwIP interface exposing TCP/UDP to the application.
 class TailcatClientDataPlane {
  public:
   TailcatClientDataPlane(DerpTransport& transport, NodeKeyPair identity,
@@ -30,6 +31,7 @@ class TailcatClientDataPlane {
 
   void connect(std::chrono::milliseconds timeout = std::chrono::seconds(15));
   std::shared_ptr<LwipTcpStream> dial(std::uint16_t port);
+  std::shared_ptr<LwipUdpSocket> dial_udp(std::uint16_t port);
   bool pump_for(std::chrono::milliseconds timeout);
 
   bool session_established() const noexcept;
@@ -61,6 +63,7 @@ class TailcatServerDataPlane {
   TailcatServerDataPlane& operator=(const TailcatServerDataPlane&) = delete;
 
   std::shared_ptr<LwipTcpListener> listen(std::uint16_t port);
+  std::shared_ptr<LwipUdpSocket> bind_udp(std::uint16_t port);
   bool pump_for(std::chrono::milliseconds timeout);
 
   std::size_t peer_count() const noexcept;
