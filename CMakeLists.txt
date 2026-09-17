@@ -123,6 +123,9 @@ set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(PICKY_DEVELOPER OFF CACHE BOOL "" FORCE)
 
 if(WIN32)
+  # libssh requires Mbed TLS threading support when built with its Mbed TLS backend.
+  # Use the alternate mutex hooks so libssh can install its platform thread callbacks.
+  add_compile_definitions(MBEDTLS_THREADING_C MBEDTLS_THREADING_ALT)
   set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
   set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
