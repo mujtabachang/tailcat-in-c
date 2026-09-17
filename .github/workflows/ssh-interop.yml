@@ -1,0 +1,170 @@
+name: ssh-interop
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "third_party/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/ssh-interop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ssh-interop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build embedded-SSH Tailcat
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux
+          cmake --build --preset linux
+          ctest --preset linux --output-on-failure
+          cp build/linux/tailcat ./cpp-tailcat
+          chmod +x ./cpp-tailcat
+      - name: Upload C++ binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: cpp-tailcat
+          if-no-files-found: error
+          retention-days: 1
+
+  server:
+    name: Embedded SSH / server runner
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - name: Start no-auth embedded SSH server
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          : > ssh-server.log
+          nohup ./cpp-tailcat serve no-auth-ssh >ssh-server.log 2>&1 &
+          echo "$!" > ssh-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' ssh-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > ssh-address.txt
+              exit 0
+            fi
+            if ! kill -0 "$(cat ssh-server.pid)" 2>/dev/null; then
+              cat ssh-server.log
+              echo "embedded SSH server exited before publishing an address" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat ssh-server.log
+          echo "timed out waiting for embedded SSH server address" >&2
+          exit 1
+      - name: Publish live SSH address
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-live-address
+          path: ssh-address.txt
+          if-no-files-found: error
+          retention-days: 1
+      - name: Keep server alive until client command arrives
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat ssh-server.pid)
+          for _ in $(seq 1 180); do
+            if grep -Fq 'ssh-e2e-command-ran' ssh-server.log; then
+              echo "embedded SSH remote command reached the separate server runner"
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat ssh-server.log
+              echo "embedded SSH server exited before client completion" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          cat ssh-server.log
+          kill "$pid" || true
+          echo "SSH client did not complete the remote command" >&2
+          exit 1
+
+  client:
+    name: Embedded SSH / client runner
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - name: Wait for live SSH address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          rm -rf ssh-address-artifact
+          for _ in $(seq 1 180); do
+            artifact_id=$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+              | jq -r '.artifacts[] | select(.name == "ssh-live-address") | .id' \
+              | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p ssh-address-artifact
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                -o ssh-address.zip
+              unzip -qo ssh-address.zip -d ssh-address-artifact
+              test -s ssh-address-artifact/ssh-address.txt
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "timed out waiting for SSH address artifact" >&2
+          exit 1
+      - name: Run remote command over embedded SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat ssh-address-artifact/ssh-address.txt)
+          echo "::add-mask::$addr"
+          output=$(timeout 120s ./cpp-tailcat ssh "$addr" "printf 'ssh-client-output'; printf 'ssh-e2e-command-ran' >&2")
+          test "$output" = "ssh-client-output"
+
+  gate:
+    name: Embedded SSH two-runner gate
+    needs: [server, client]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Embedded C++ Tailcat SSH executed a command across independent runners without a host sshd."
