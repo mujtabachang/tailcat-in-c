@@ -123,6 +123,7 @@ if(NOT CURL_FOUND)
 endif()
 
 add_library(tailcat_core STATIC
+    src/address_resolver.cpp
     src/cli.cpp
     src/extra_commands.cpp
     src/forward_command.cpp
@@ -159,7 +160,9 @@ endif()
 
 if(WIN32)
   target_compile_definitions(tailcat_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(tailcat_core PUBLIC ws2_32 shell32)
+  target_link_libraries(tailcat_core PUBLIC ws2_32 shell32 dnsapi)
+else()
+  target_link_libraries(tailcat_core PUBLIC resolv)
 endif()
 
 add_executable(tailcat src/main.cpp)
@@ -172,6 +175,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_tests tests/cli_test.cpp)
     target_link_libraries(tailcat_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_cli COMMAND tailcat_tests)
+
+    add_executable(tailcat_address_resolver_tests tests/address_resolver_test.cpp)
+    target_link_libraries(tailcat_address_resolver_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_address_resolver COMMAND tailcat_address_resolver_tests)
 
     add_executable(tailcat_protocol_tests tests/protocol_test.cpp)
     target_link_libraries(tailcat_protocol_tests PRIVATE tailcat_core)
@@ -231,6 +238,7 @@ if(TAILCAT_BUILD_TESTS)
 
     set(TAILCAT_TEST_TARGETS
       tailcat_tests
+      tailcat_address_resolver_tests
       tailcat_protocol_tests
       tailcat_ip_tests
       tailcat_lwip_tests
