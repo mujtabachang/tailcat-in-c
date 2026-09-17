@@ -3,7 +3,10 @@
 
 #include "tailcat/cli.hpp"
 #include "tailcat/platform.hpp"
+#include "tailcat/transport.hpp"
 
+#include <charconv>
+#include <cstdint>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
@@ -23,9 +26,42 @@ bool is_version(std::string_view arg) { return arg == "-V" || arg == "--version"
 
 int unavailable(std::string_view command) {
   std::cerr << "tailcat: '" << command
-            << "' is part of the native C++ rewrite but its data-plane implementation is not yet enabled.\n"
-            << "The repository intentionally contains no Go fallback.\n";
+            << "' is part of the native C++ rewrite but its DERP/WireGuard data-plane implementation is not yet enabled.\n"
+            << "Use the native tcp:// bootstrap transport for stdin/stdout piping in the meantime.\n";
   return 2;
+}
+
+std::uint16_t parse_listen_port(std::string_view value) {
+  unsigned int parsed = 0;
+  const auto [ptr, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc{} || ptr != value.data() + value.size() || parsed > 65535U) {
+    throw std::invalid_argument("invalid listen port: " + std::string(value));
+  }
+  return static_cast<std::uint16_t>(parsed);
+}
+
+int run_listener(const std::vector<std::string>& args) {
+  std::string bind_host = "0.0.0.0";
+  std::uint16_t port = 0;
+
+  for (const std::string& arg : args) {
+    constexpr std::string_view bind_prefix = "--bind=";
+    constexpr std::string_view port_prefix = "--port=";
+    if (std::string_view(arg).starts_with(bind_prefix)) {
+      bind_host = arg.substr(bind_prefix.size());
+      if (bind_host.empty()) {
+        throw std::invalid_argument("--bind requires an address");
+      }
+      continue;
+    }
+    if (std::string_view(arg).starts_with(port_prefix)) {
+      port = parse_listen_port(std::string_view(arg).substr(port_prefix.size()));
+      continue;
+    }
+    throw std::invalid_argument("unknown listen option: " + arg);
+  }
+
+  return run_tcp_listener(bind_host, port);
 }
 
 }  // namespace
@@ -59,22 +95,25 @@ std::string usage() {
   std::ostringstream out;
   out << "tailcat " << kVersion << " (native C++20)\n\n"
       << "Usage:\n"
-      << "  tailcat [options]                 Listen for a pipe connection\n"
-      << "  tailcat <tc-address> [port]       Connect to a peer\n"
-      << "  tailcat serve ...                 Serve ports/files/SSH/exec\n"
-      << "  tailcat forward ...               Forward local ports\n"
-      << "  tailcat browse ...                Open a forwarded HTTP service\n"
-      << "  tailcat cp ...                    Copy files\n"
-      << "  tailcat recv ...                  Receive files\n"
-      << "  tailcat ssh ...                   SSH through tailcat\n"
-      << "  tailcat socks ...                 Run a SOCKS proxy\n"
-      << "  tailcat ping ...                  Probe a peer\n"
-      << "  tailcat genkey ...                Generate reusable connection material\n"
-      << "  tailcat parse ...                 Decode a tailcat address\n\n"
+      << "  tailcat [--bind=ADDR] [--port=N]  Listen using the native TCP bootstrap transport\n"
+      << "  tailcat listen [options]          Same as above\n"
+      << "  tailcat tcp://HOST:PORT           Connect and pipe stdin/stdout over native TCP\n"
+      << "  tailcat <tc-address> [port]       Reserved for DERP/WireGuard-compatible Tailcat transport\n"
+      << "  tailcat serve ...                 Serve ports/files/SSH/exec (planned)\n"
+      << "  tailcat forward ...               Forward local ports (planned)\n"
+      << "  tailcat browse ...                Open a forwarded HTTP service (planned)\n"
+      << "  tailcat cp ...                    Copy files (planned)\n"
+      << "  tailcat recv ...                  Receive files (planned)\n"
+      << "  tailcat ssh ...                   SSH through tailcat (planned)\n"
+      << "  tailcat socks ...                 Run a SOCKS proxy (planned)\n"
+      << "  tailcat ping ...                  Probe a peer (planned)\n"
+      << "  tailcat genkey ...                Generate reusable connection material (planned)\n"
+      << "  tailcat parse ...                 Decode a tailcat address (planned)\n\n"
       << "Options:\n"
       << "  -h, --help       Show this help\n"
       << "  -V, --version    Show version\n"
-      << "  -v, --verbose    Enable diagnostic logging\n";
+      << "  -v, --verbose    Enable diagnostic logging\n\n"
+      << "Native TCP bootstrap mode is not encrypted and is not compatible with upstream tc... addresses.\n";
   return out.str();
 }
 
@@ -88,17 +127,26 @@ int run(const CommandLine& cli) {
     return 0;
   }
 
+  if (cli.command.empty()) {
+    return run_listener(cli.args);
+  }
+  if (cli.command == "listen") {
+    return run_listener(cli.args);
+  }
+  if (std::string_view(cli.command).starts_with("tcp://")) {
+    if (!cli.args.empty()) {
+      throw std::invalid_argument("tcp:// connection does not accept additional arguments");
+    }
+    return run_tcp_client(parse_tcp_endpoint(cli.command));
+  }
+  if (std::string_view(cli.command).starts_with("tc")) {
+    return unavailable("connect");
+  }
+
   static const std::unordered_set<std::string> commands = {
       "serve", "forward", "browse", "cp", "recv", "ssh", "socks", "ping", "genkey", "parse", "ls"};
-
-  if (cli.command.empty()) {
-    return unavailable("listen");
-  }
   if (commands.contains(cli.command)) {
     return unavailable(cli.command);
-  }
-  if (cli.command.rfind("tc", 0) == 0) {
-    return unavailable("connect");
   }
 
   std::cerr << "tailcat: unknown command or address: " << cli.command << "\n\n" << usage();

@@ -13,13 +13,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(TAILCAT_BUILD_TESTS "Build tailcat tests" ON)
 
+find_package(Threads REQUIRED)
+
 add_library(tailcat_core
     src/cli.cpp
     src/platform.cpp
+    src/transport.cpp
 )
 target_include_directories(tailcat_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(tailcat_core PUBLIC cxx_std_20)
 target_compile_definitions(tailcat_core PRIVATE TAILCAT_VERSION="${TAILCAT_VERSION}")
+target_link_libraries(tailcat_core PUBLIC Threads::Threads)
 
 if(MSVC)
   target_compile_options(tailcat_core PRIVATE /W4 /permissive-)
