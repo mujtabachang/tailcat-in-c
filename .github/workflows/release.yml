@@ -66,14 +66,17 @@ jobs:
         include:
           - os: ubuntu-latest
             preset: linux
+            triplet: x64-linux
             artifact: tailcat-linux-x86_64
             executable: tailcat
           - os: macos-latest
             preset: macos
+            triplet: arm64-osx
             artifact: tailcat-macos-arm64
             executable: tailcat
           - os: windows-latest
             preset: windows
+            triplet: x64-windows-static
             artifact: tailcat-windows-x86_64
             executable: tailcat.exe
     runs-on: ${{ matrix.os }}
@@ -83,9 +86,21 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+          vcpkgGitCommitId: '386d7c478221b7ee0c97bfe6ea61dcf65121d564'
+          runVcpkgInstall: true
+          vcpkgJsonGlob: '**/vcpkg.json'
+
       - name: Configure
         shell: bash
-        run: cmake --preset "${{ matrix.preset }}" -DTAILCAT_VERSION="${{ inputs.version }}"
+        run: >-
+          cmake --preset "${{ matrix.preset }}"
+          -DTAILCAT_VERSION="${{ inputs.version }}"
+          -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}"
 
       - name: Build
         shell: bash
