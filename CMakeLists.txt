@@ -167,6 +167,13 @@ endif()
 
 add_executable(tailcat src/main.cpp)
 target_link_libraries(tailcat PRIVATE tailcat_core)
+# GitHub's Windows preset uses MinGW. Link its GCC/C++/pthread runtimes into
+# tailcat so the released tailcat.exe does not depend on DLLs from the runner's
+# toolchain directory. Windows system DLLs (Schannel, Winsock, DNS, shell32)
+# remain ordinary platform dependencies.
+if(MINGW)
+  target_link_options(tailcat PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 install(TARGETS tailcat RUNTIME DESTINATION bin)
 
 if(TAILCAT_BUILD_TESTS)
