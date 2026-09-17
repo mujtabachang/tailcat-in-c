@@ -115,6 +115,7 @@ add_library(tailcat_core STATIC
     src/cli.cpp
     src/platform.cpp
     src/protocol.cpp
+    src/ip.cpp
     src/crypto.cpp
     src/derp.cpp
     src/derp_http.cpp
@@ -153,6 +154,10 @@ if(TAILCAT_BUILD_TESTS)
     add_executable(tailcat_protocol_tests tests/protocol_test.cpp)
     target_link_libraries(tailcat_protocol_tests PRIVATE tailcat_core)
     add_test(NAME tailcat_protocol COMMAND tailcat_protocol_tests)
+
+    add_executable(tailcat_ip_tests tests/ip_test.cpp)
+    target_link_libraries(tailcat_ip_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_ip COMMAND tailcat_ip_tests)
 
     add_executable(tailcat_derp_tests tests/derp_test.cpp)
     target_link_libraries(tailcat_derp_tests PRIVATE tailcat_core)
