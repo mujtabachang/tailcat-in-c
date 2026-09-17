@@ -1,112 +1,47 @@
-# Installing tailcat
+# Installing tailcat-in-c
 
-This page lists the ways to install the `tailcat` CLI. For what
-tailcat is and how to use it, see the [README](./README.md).
+## Dependencies
 
-## Prebuilt binaries
+A C++20 compiler, CMake 3.24+, Boost.Asio/Boost.JSON, OpenSSL, and libsodium are required. vcpkg manifest mode is the supported cross-platform dependency path.
 
-Prebuilt binaries are on the
-[Releases page](https://github.com/tailscale/tailcat/releases): static
-Linux binaries (tar.gz) plus Debian (.deb) and RPM (.rpm) packages for
-amd64, arm64, and armv7, and Windows binaries (zip) for amd64 and
-arm64.
+## Linux
 
-## Homebrew (macOS)
-
-For macOS, install with [Homebrew](https://brew.sh/):
+With vcpkg:
 
 ```sh
-$ brew install tailcat
+cmake --preset ninja-multi-vcpkg
+cmake --build --preset ninja-multi-vcpkg --config Release
 ```
 
-## Scoop (Windows)
+Or install your distribution's Boost, OpenSSL development, and libsodium development packages and use a normal CMake build.
 
-For Windows, install with [Scoop](https://scoop.sh/). The package is
-in Scoop's main bucket, so no extra bucket is needed:
+## macOS
+
+Install Xcode Command Line Tools, CMake, Ninja, and vcpkg, then:
 
 ```sh
-$ scoop install tailcat
+cmake --preset ninja-multi-vcpkg
+cmake --build --preset ninja-multi-vcpkg --config Release
 ```
 
-## Container image
+The GitHub Actions macOS target builds for Apple Silicon (`arm64-osx`).
 
-There's a
-[container image](https://github.com/tailscale/tailcat/pkgs/container/tailcat):
+## Windows
+
+Use Visual Studio 2022 Build Tools (or Visual Studio 2022), CMake, Ninja, and vcpkg from a Developer PowerShell:
+
+```powershell
+cmake --preset ninja-multi-vcpkg
+cmake --build --preset ninja-multi-vcpkg --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+The Windows CI/release target is `x64-windows`.
+
+## Install
 
 ```sh
-$ docker pull ghcr.io/tailscale/tailcat:latest  # or :vx.y.z
-$ docker run --rm -i ghcr.io/tailscale/tailcat:latest
+cmake --install build --config Release --prefix /desired/prefix
 ```
 
-Don't add `-t`: a pty is a single byte stream, so it merges the
-status output that tailcat writes to stderr (including the listening
-address) into stdout with the tunnel data, and no redirection can
-separate the two again. Use `-i` alone when piping through stdin.
-
-## Go toolchain
-
-Build from source with a Go toolchain:
-
-```sh
-$ go install github.com/tailscale/tailcat/cmd/tailcat@latest
-```
-
-This works on any operating system Go supports. It's the only install
-method for FreeBSD and OpenBSD, which are expected to work but aren't
-regularly tested; CI checks that they keep compiling. It's also the
-only way to target browsers: the tailcat Go library and the web demo
-(the `web` directory in this repo) build for js/wasm.
-
-## Nix
-
-With Nix, from [nixpkgs](https://search.nixos.org/packages?channel=unstable&query=tailcat):
-
-```sh
-$ nix profile install nixpkgs#tailcat
-$ nix-env -iA nixpkgs.tailcat  # or with classic nix-env
-```
-
-Or with Nix flakes from this repo, run it directly or install it:
-
-```sh
-$ nix run github:tailscale/tailcat
-$ nix profile install github:tailscale/tailcat
-```
-
-## Arch Linux (AUR)
-
-[![tailcat on AUR](https://img.shields.io/aur/version/tailcat?label=tailcat)](https://aur.archlinux.org/packages/tailcat/)
-[![tailcat-bin on AUR](https://img.shields.io/aur/version/tailcat-bin?label=tailcat-bin)](https://aur.archlinux.org/packages/tailcat-bin/)
-
-```bash
-# Build release package from source
-yay -S tailcat
-
-# OR install the binary release
-yay -S tailcat-bin
-```
-
-## conda-forge
-
-[![tailcat on conda-forge](https://img.shields.io/conda/vn/conda-forge/tailcat?logo=conda-forge)](https://prefix.dev/channels/conda-forge/packages/tailcat)
-[![tailcat on conda-forge](https://img.shields.io/conda/pn/conda-forge/tailcat?logo=conda-forge)](https://prefix.dev/channels/conda-forge/packages/tailcat)
-
-```bash
-pixi global install tailcat
-# run without installation
-pixi exec tailcat
-```
-
-## Packaging from source
-
-The official binaries are built with a list of build tags that omits
-unused Tailscale features, making them about 16% smaller. The
-recommended tag list is checked in as
-[build-tags.txt](./build-tags.txt) (and kept accurate by a CI test),
-so packagers (Homebrew, AUR, NixOS, etc.) can build the same way:
-
-```sh
-$ go build -tags "$(cat build-tags.txt)" -ldflags "-s -w" ./cmd/tailcat
-```
-
-See [build-tags.md](./build-tags.md) for the details.
+The executable is installed under `bin/`.
