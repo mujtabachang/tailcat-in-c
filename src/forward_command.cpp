@@ -25,11 +25,11 @@ namespace {
 using namespace std::chrono_literals;
 constexpr std::string_view kDefaultDerpMap = "https://tailcat.dev/derpmap.json";
 
-std::uint16_t parse_forward_port(std::string_view text) {
+std::uint16_t parse_forward_port(std::string_view text, bool allow_zero = false) {
   if (text.empty()) throw std::invalid_argument("empty forward port");
   std::size_t consumed = 0;
   const auto value = std::stoul(std::string(text), &consumed, 10);
-  if (consumed != text.size() || value == 0U || value > 65535U) {
+  if (consumed != text.size() || value > 65535U || (!allow_zero && value == 0U)) {
     throw std::invalid_argument("invalid forward port: " + std::string(text));
   }
   return static_cast<std::uint16_t>(value);
@@ -45,7 +45,7 @@ TcpForwardMapping parse_mapping(std::string_view text) {
       text.find(':', colon + 1U) != std::string_view::npos) {
     throw std::invalid_argument("invalid forward mapping: " + std::string(text));
   }
-  return TcpForwardMapping{parse_forward_port(text.substr(0U, colon)),
+  return TcpForwardMapping{parse_forward_port(text.substr(0U, colon), true),
                            parse_forward_port(text.substr(colon + 1U))};
 }
 
@@ -75,7 +75,9 @@ int run_forward_command(const std::vector<std::string>& args, bool verbose) {
     constexpr std::string_view prefix = "--bind=";
     if (arg.rfind(prefix, 0) == 0) {
       bind_address = arg.substr(prefix.size());
-      if (bind_address.empty()) throw std::invalid_argument("--bind requires an address");
+      if (bind_address.empty()) {
+        throw std::invalid_argument("--bind requires an address");
+      }
       continue;
     }
     if (!arg.empty() && arg[0] == '-') {
@@ -92,7 +94,8 @@ int run_forward_command(const std::vector<std::string>& args, bool verbose) {
     throw std::invalid_argument("forward requires a <tc-address>");
   }
   if (mappings.empty()) {
-    throw std::invalid_argument("forward requires one or more [local:]remote port mappings");
+    throw std::invalid_argument(
+        "forward requires one or more [local:]remote port mappings");
   }
 
   auto info = parse_tailcat_addr(address);
