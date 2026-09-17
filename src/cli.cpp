@@ -7,14 +7,15 @@
 #include "tailcat/data_plane.hpp"
 #include "tailcat/derp_http.hpp"
 #include "tailcat/derp_map.hpp"
+#include "tailcat/embedded_ssh.hpp"
 #include "tailcat/extra_commands.hpp"
 #include "tailcat/forward_command.hpp"
-#include "tailcat/host_tcp.hpp"
 #include "tailcat/platform.hpp"
 #include "tailcat/port_forward.hpp"
 #include "tailcat/protocol.hpp"
 #include "tailcat/rendezvous.hpp"
 #include "tailcat/saved_key.hpp"
+#include "tailcat/ssh_authorized_keys.hpp"
 #include "tailcat/ssh_command.hpp"
 
 #include <algorithm>
@@ -373,7 +374,9 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
               const std::string& key_name) {
   std::optional<bool> psk_override;
   std::optional<std::vector<Key32>> allow_keys;
+  std::string ssh_authorized_key_sources;
   bool ssh_service = false;
+  bool no_auth_ssh_service = false;
   std::vector<std::uint16_t> ports;
   for (std::size_t i = 0; i < args.size(); ++i) {
     const auto& arg = args[i];
@@ -386,28 +389,51 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
       allow_keys = parse_allow_list(args[i]);
     } else if (arg.rfind("--allow=", 0) == 0) {
       allow_keys = parse_allow_list(arg.substr(8U));
+    } else if (arg == "--ssh-authorized-keys") {
+      if (++i >= args.size()) {
+        throw std::invalid_argument("--ssh-authorized-keys requires a value");
+      }
+      ssh_authorized_key_sources = args[i];
+    } else if (arg.rfind("--ssh-authorized-keys=", 0) == 0) {
+      ssh_authorized_key_sources = arg.substr(22U);
+      if (ssh_authorized_key_sources.empty()) {
+        throw std::invalid_argument("--ssh-authorized-keys requires a value");
+      }
     } else if (arg == "ssh") {
       ssh_service = true;
-      ports.push_back(22U);
+    } else if (arg == "no-auth-ssh") {
+      no_auth_ssh_service = true;
     } else if (!arg.empty() && arg[0] == '-') {
       throw std::invalid_argument("unsupported serve option: " + arg);
     } else {
       ports.push_back(parse_port(arg));
     }
   }
-  if (ports.empty()) {
-    throw std::invalid_argument("serve requires ssh or one or more TCP ports");
-  }
 
-  if (ssh_service) {
-    try {
-      auto probe = HostTcpStream::connect("127.0.0.1", 22U);
-      probe->close();
-    } catch (const std::exception& e) {
-      throw std::runtime_error(
-          std::string("serve ssh requires a local SSH server on 127.0.0.1:22: ") +
-          e.what());
-    }
+  if (!ssh_service && !no_auth_ssh_service && ports.empty()) {
+    throw std::invalid_argument(
+        "serve requires ssh, no-auth-ssh, or one or more TCP ports");
+  }
+  if (ssh_service && no_auth_ssh_service) {
+    throw std::invalid_argument(
+        "the 'ssh' and 'no-auth-ssh' services cannot be served together");
+  }
+  if (ssh_service && ssh_authorized_key_sources.empty()) {
+    throw std::invalid_argument("the 'ssh' service requires --ssh-authorized-keys");
+  }
+  if (no_auth_ssh_service && !ssh_authorized_key_sources.empty()) {
+    throw std::invalid_argument(
+        "--ssh-authorized-keys cannot be used with the 'no-auth-ssh' service; use 'ssh' instead");
+  }
+  if (!ssh_service && !ssh_authorized_key_sources.empty()) {
+    throw std::invalid_argument(
+        "--ssh-authorized-keys requires the 'ssh' service");
+  }
+  const bool embedded_ssh_service = ssh_service || no_auth_ssh_service;
+  if (embedded_ssh_service &&
+      std::find(ports.begin(), ports.end(), 22U) != ports.end()) {
+    throw std::invalid_argument(
+        "cannot serve embedded SSH and forward TCP port 22 at the same time");
   }
 
   auto server = make_server_bootstrap(psk_override, key_name);
@@ -421,25 +447,48 @@ int run_serve(const std::vector<std::string>& args, bool verbose,
     };
   }
   TailcatServerDataPlane data(derp, server.identity, server.psk, std::move(allow));
-  ServedTcpPorts forwarding(data, std::move(ports));
+  std::unique_ptr<EmbeddedSshServer> embedded_ssh;
+  std::unique_ptr<ServedTcpPorts> forwarding;
+  if (embedded_ssh_service) {
+    EmbeddedSshOptions options;
+    options.allow_none = no_auth_ssh_service;
+    options.verbose = verbose;
+    if (ssh_service) {
+      options.authorized_key_blobs =
+          load_ssh_authorized_key_blobs(ssh_authorized_key_sources);
+    }
+    embedded_ssh =
+        std::make_unique<EmbeddedSshServer>(data, std::move(options));
+  }
+  if (!ports.empty()) forwarding = std::make_unique<ServedTcpPorts>(data, ports);
+
   log_server_address(server, verbose);
   if (verbose) {
     if (allow_keys) {
       std::cerr << "# allowing " << allow_keys->size() << " client key(s)\n";
     }
-    for (const auto port : forwarding.ports()) {
-      if (port == 22U && ssh_service) {
-        std::cerr << "# serving SSH -> 127.0.0.1:22\n";
-      } else {
+    if (embedded_ssh) {
+      std::cerr << "# serving embedded "
+                << (ssh_service ? "public-key-authenticated SSH" : "no-auth SSH")
+                << " on Tailcat TCP port 22\n";
+    }
+    if (forwarding) {
+      for (const auto port : forwarding->ports()) {
         std::cerr << "# serving TCP " << port << " -> 127.0.0.1:" << port
                   << '\n';
       }
     }
   }
 
+  if (no_auth_ssh_service && !allow_keys) {
+    std::cerr << "# ⚠️ WARNING: no-auth-ssh accepts any client that knows the Tailcat address; "
+                 "use --allow or the authenticated ssh service for public/DNS-published addresses\n";
+  }
+
   for (;;) {
     (void)data.pump_for(10ms);
-    forwarding.poll();
+    if (embedded_ssh) embedded_ssh->poll();
+    if (forwarding) forwarding->poll();
   }
 }
 
@@ -491,8 +540,8 @@ std::string usage() {
       << "Usage:\n"
       << "  tailcat [options]                         Listen for a pipe connection\n"
       << "  tailcat <tc-address|dns-name> [port]      Connect to a peer\n"
-      << "  tailcat serve [--psk=false] [--allow=NODEKEY,...] (ssh|PORT)...\n"
-      << "                                             Proxy selected services to localhost\n"
+      << "  tailcat serve [serve-options] (ssh|no-auth-ssh|PORT)...\n"
+      << "                                             Serve embedded SSH and/or proxy TCP\n"
       << "  tailcat ssh [-p PORT] [user@]<tc-address> [command ...]\n"
       << "                                             Run system OpenSSH through Tailcat\n"
       << "  tailcat cp [scp options] SOURCE DEST      Copy with system scp through Tailcat\n"
@@ -509,6 +558,11 @@ std::string usage() {
       << "  tailcat socks ...                         Run a SOCKS proxy\n"
       << "  tailcat ping <tc-address|dns-name>        Probe a peer over DERP\n"
       << "  tailcat parse <tc-address>                Decode a tailcat address\n\n"
+      << "Serve options:\n"
+      << "  --allow=NODEKEY,...          Allow only these authenticated Tailcat peers\n"
+      << "  --psk=true|false             Include/omit the WireGuard PSK\n"
+      << "  --ssh-authorized-keys=SRC    SSH key file, literal key, or alice@github\n"
+      << "                               (required for the 'ssh' service)\n\n"
       << "Options:\n"
       << "  -h, --help       Show this help\n"
       << "  -V, --version    Show version\n"

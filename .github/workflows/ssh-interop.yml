@@ -1,0 +1,328 @@
+name: ssh-interop
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "third_party/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/ssh-interop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ssh-interop-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build embedded-SSH Tailcat
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --preset linux
+          cmake --build --preset linux
+          ctest --preset linux --output-on-failure
+          cp build/linux/tailcat ./cpp-tailcat
+          chmod +x ./cpp-tailcat
+      - name: Upload C++ binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: cpp-tailcat
+          if-no-files-found: error
+          retention-days: 1
+
+  server:
+    name: No-auth SSH / server runner
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - name: Start no-auth embedded SSH server
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          : > ssh-server.log
+          nohup ./cpp-tailcat serve no-auth-ssh >ssh-server.log 2>&1 &
+          echo "$!" > ssh-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' ssh-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > ssh-address.txt
+              exit 0
+            fi
+            if ! kill -0 "$(cat ssh-server.pid)" 2>/dev/null; then
+              cat ssh-server.log
+              exit 1
+            fi
+            sleep 1
+          done
+          cat ssh-server.log
+          exit 1
+      - name: Publish live SSH address
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-live-address
+          path: ssh-address.txt
+          retention-days: 1
+      - name: Keep server alive until client reports success
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat ssh-server.pid)
+          for _ in $(seq 1 180); do
+            artifact_id=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" | jq -r '.artifacts[] | select(.name == "ssh-client-complete") | .id' | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              kill "$pid" || true
+              exit 0
+            fi
+            kill -0 "$pid" 2>/dev/null || { cat ssh-server.log; exit 1; }
+            sleep 1
+          done
+          cat ssh-server.log
+          kill "$pid" || true
+          exit 1
+
+  client:
+    name: No-auth SSH / client runner
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download C++ binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - name: Wait for live SSH address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          rm -rf ssh-address-artifact
+          for _ in $(seq 1 180); do
+            artifact_id=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" | jq -r '.artifacts[] | select(.name == "ssh-live-address") | .id' | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p ssh-address-artifact
+              curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" -o ssh-address.zip
+              unzip -qo ssh-address.zip -d ssh-address-artifact
+              test -s ssh-address-artifact/ssh-address.txt
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Run remote command over embedded SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat ssh-address-artifact/ssh-address.txt)
+          echo "::add-mask::$addr"
+          output=$(timeout 120s ./cpp-tailcat ssh "$addr" "printf 'ssh-client-output'")
+          test "$output" = "ssh-client-output"
+          printf 'ok\n' > ssh-client-complete.txt
+      - name: Publish SSH client completion
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-client-complete
+          path: ssh-client-complete.txt
+          retention-days: 1
+
+  noauth-gate:
+    name: No-auth embedded SSH gate
+    needs: [server, client]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No-auth embedded SSH remote command passed across separate runners."
+
+  auth-key:
+    name: Generate ephemeral SSH identity
+    needs: noauth-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Ed25519 key
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh-keygen -q -t ed25519 -N '' -f id_ed25519
+      - name: Upload public key
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-auth-public
+          path: id_ed25519.pub
+          retention-days: 1
+      - name: Upload private key
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-auth-private
+          path: id_ed25519
+          retention-days: 1
+
+  auth-server:
+    name: Authenticated SSH / server runner
+    needs: [build, auth-key]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: ssh-auth-public
+          path: .
+      - name: Start authenticated embedded SSH server
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          : > auth-ssh-server.log
+          nohup ./cpp-tailcat serve --ssh-authorized-keys=id_ed25519.pub ssh >auth-ssh-server.log 2>&1 &
+          echo "$!" > auth-ssh-server.pid
+          for _ in $(seq 1 120); do
+            addr=$(grep -Eo 'tc[A-Za-z0-9_-]+' auth-ssh-server.log | head -n1 || true)
+            if [[ -n "$addr" ]]; then
+              echo "::add-mask::$addr"
+              printf '%s\n' "$addr" > auth-ssh-address.txt
+              exit 0
+            fi
+            kill -0 "$(cat auth-ssh-server.pid)" 2>/dev/null || { cat auth-ssh-server.log; exit 1; }
+            sleep 1
+          done
+          cat auth-ssh-server.log
+          exit 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auth-ssh-live-address
+          path: auth-ssh-address.txt
+          retention-days: 1
+      - name: Keep authenticated server alive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pid=$(cat auth-ssh-server.pid)
+          for _ in $(seq 1 240); do
+            artifact_id=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" | jq -r '.artifacts[] | select(.name == "auth-ssh-client-complete") | .id' | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              kill "$pid" || true
+              exit 0
+            fi
+            kill -0 "$pid" 2>/dev/null || { cat auth-ssh-server.log; exit 1; }
+            sleep 1
+          done
+          cat auth-ssh-server.log
+          kill "$pid" || true
+          exit 1
+
+  auth-client:
+    name: Authenticated + PTY SSH / client runner
+    needs: [build, auth-key]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ssh-cpp-tailcat
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: ssh-auth-private
+          path: .
+      - name: Install ephemeral client identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./cpp-tailcat
+          mkdir -p "$HOME/.ssh"
+          cp id_ed25519 "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+      - name: Wait for authenticated SSH address
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf auth-address-artifact
+          for _ in $(seq 1 180); do
+            artifact_id=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" | jq -r '.artifacts[] | select(.name == "auth-ssh-live-address") | .id' | head -n1 || true)
+            if [[ -n "$artifact_id" ]]; then
+              mkdir -p auth-address-artifact
+              curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" -o auth-address.zip
+              unzip -qo auth-address.zip -d auth-address-artifact
+              test -s auth-address-artifact/auth-ssh-address.txt
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Run authenticated remote command
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat auth-address-artifact/auth-ssh-address.txt)
+          echo "::add-mask::$addr"
+          output=$(env -u SSH_AUTH_SOCK timeout 120s ./cpp-tailcat ssh "$addr" "printf 'authenticated-command'")
+          test "$output" = "authenticated-command"
+      - name: Run authenticated interactive PTY shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          addr=$(cat auth-address-artifact/auth-ssh-address.txt)
+          echo "::add-mask::$addr"
+          proxy="$(pwd)/cpp-tailcat '$addr' 22"
+          set +e
+          printf 'echo authenticated-interactive\nexit\n' | timeout 120s ssh -tt \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o 'IdentitiesOnly yes' \
+            -o 'UpdateHostKeys no' \
+            -o 'StrictHostKeyChecking no' \
+            -o 'UserKnownHostsFile /dev/null' \
+            -o 'LogLevel ERROR' \
+            -o "ProxyCommand=$proxy" \
+            -- tailcat-interactive-test >interactive.out 2>&1
+          rc=$?
+          set -e
+          cat interactive.out
+          test "$rc" -eq 0
+          grep -Fq 'authenticated-interactive' interactive.out
+          grep -Fq 'Connected via tailcat SSH.' interactive.out
+          printf 'ok\n' > auth-ssh-client-complete.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auth-ssh-client-complete
+          path: auth-ssh-client-complete.txt
+          retention-days: 1
+
+  gate:
+    name: Embedded SSH parity gate
+    needs: [auth-server, auth-client]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Embedded C++ Tailcat SSH passed no-auth, public-key auth, remote exec, and interactive PTY tests across separate runners."

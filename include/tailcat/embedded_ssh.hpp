@@ -5,8 +5,23 @@
 #include "tailcat/data_plane.hpp"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace tailcat {
+
+struct EmbeddedSshOptions {
+  // Upstream's explicit no-auth-ssh service relies on the already-authenticated
+  // Tailcat/WireGuard peer identity and permits SSH's "none" auth method.
+  bool allow_none = false;
+
+  // Canonical public-key base64 blobs accepted for SSH public-key auth. The
+  // ordinary "ssh" service requires at least one key; no-auth-ssh leaves this
+  // empty and sets allow_none instead.
+  std::vector<std::string> authorized_key_blobs;
+
+  bool verbose = false;
+};
 
 // Terminates SSH directly on Tailcat TCP port 22. Unlike ordinary served TCP
 // ports this does not connect to a host-side sshd; SSH protocol handling and
@@ -14,7 +29,7 @@ namespace tailcat {
 class EmbeddedSshServer {
  public:
   explicit EmbeddedSshServer(TailcatServerDataPlane& data_plane,
-                             bool verbose = false);
+                             EmbeddedSshOptions options = {});
   ~EmbeddedSshServer();
   EmbeddedSshServer(const EmbeddedSshServer&) = delete;
   EmbeddedSshServer& operator=(const EmbeddedSshServer&) = delete;
