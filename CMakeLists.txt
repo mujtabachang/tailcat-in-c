@@ -125,6 +125,7 @@ endif()
 add_library(tailcat_core STATIC
     src/cli.cpp
     src/forward_command.cpp
+    src/ssh_command.cpp
     src/platform.cpp
     src/protocol.cpp
     src/ip.cpp
@@ -208,6 +209,10 @@ if(TAILCAT_BUILD_TESTS)
     target_link_libraries(tailcat_host_tcp_tests PRIVATE tailcat_core Threads::Threads)
     add_test(NAME tailcat_host_tcp COMMAND tailcat_host_tcp_tests)
 
+    add_executable(tailcat_ssh_command_tests tests/ssh_command_test.cpp)
+    target_link_libraries(tailcat_ssh_command_tests PRIVATE tailcat_core)
+    add_test(NAME tailcat_ssh_command COMMAND tailcat_ssh_command_tests)
+
     set(TAILCAT_TEST_TARGETS
       tailcat_tests
       tailcat_protocol_tests
@@ -220,6 +225,7 @@ if(TAILCAT_BUILD_TESTS)
       tailcat_wireguard_derp_tests
       tailcat_data_plane_tests
       tailcat_host_tcp_tests
+      tailcat_ssh_command_tests
     )
     foreach(test_target IN LISTS TAILCAT_TEST_TARGETS)
       if(MSVC)
