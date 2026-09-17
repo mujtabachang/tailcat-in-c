@@ -22,6 +22,8 @@ struct LwipUdpDatagram {
 // The owning LwipStack must outlive every LwipUdpSocket.
 class LwipUdpSocket {
  public:
+  struct Impl;
+
   ~LwipUdpSocket();
   LwipUdpSocket(const LwipUdpSocket&) = delete;
   LwipUdpSocket& operator=(const LwipUdpSocket&) = delete;
@@ -41,7 +43,6 @@ class LwipUdpSocket {
   void close() noexcept;
 
  private:
-  struct Impl;
   explicit LwipUdpSocket(std::shared_ptr<Impl> impl);
   std::shared_ptr<Impl> impl_;
 };
