@@ -104,14 +104,15 @@ jobs:
           set -euo pipefail
           pid=$(cat cpp-cpp-server.pid)
           for _ in $(seq 1 180); do
-            if ! kill -0 "$pid" 2>/dev/null; then
-              wait "$pid" || {
-                cat cpp-cpp-server.log
-                exit 1
-              }
+            if grep -Fq 'cpp-client-to-cpp-server' cpp-cpp-server.log; then
               grep -F 'cpp-client-to-cpp-server' cpp-cpp-server.log
               echo "C++ server received payload from the separate C++ client runner"
               exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat cpp-cpp-server.log
+              echo "C++ server exited without receiving the expected payload" >&2
+              exit 1
             fi
             sleep 1
           done
@@ -272,14 +273,15 @@ jobs:
           set -euo pipefail
           pid=$(cat cpp-go-server.pid)
           for _ in $(seq 1 180); do
-            if ! kill -0 "$pid" 2>/dev/null; then
-              wait "$pid" || {
-                cat cpp-go-server.log
-                exit 1
-              }
+            if grep -Fq 'go-client-to-cpp-server' cpp-go-server.log; then
               grep -F 'go-client-to-cpp-server' cpp-go-server.log
               echo "C++ server received payload from upstream Go client"
               exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat cpp-go-server.log
+              echo "C++ server exited without receiving the expected Go payload" >&2
+              exit 1
             fi
             sleep 1
           done
@@ -397,14 +399,15 @@ jobs:
           set -euo pipefail
           pid=$(cat go-cpp-server.pid)
           for _ in $(seq 1 180); do
-            if ! kill -0 "$pid" 2>/dev/null; then
-              wait "$pid" || {
-                cat go-cpp-server.log
-                exit 1
-              }
+            if grep -Fq 'cpp-client-to-go-server' go-cpp-server.log; then
               grep -F 'cpp-client-to-go-server' go-cpp-server.log
               echo "Go server received payload from native C++ client"
               exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat go-cpp-server.log
+              echo "Go server exited without receiving the expected C++ payload" >&2
+              exit 1
             fi
             sleep 1
           done
